@@ -21,10 +21,10 @@ audio* and nothing else. Your Discord notification sounds are not music, and
 pova knows that.
 
 <p align="center">
-  <a href="https://github.com/P0r0ro/pova/releases/download/v1.0.0/pova-launch.mp4">
-    <img src="assets/launch-video.jpg" alt="Watch the 40-second launch video, hosted by the pova cat" width="720">
+  <a href="assets/pova-launch.mp4">
+    <img src="assets/pova-tour.gif" alt="The 40-second pova tour, hosted by the pova cat: search, queue, lyrics, themes and likes" width="900">
   </a><br>
-  <sub>The 40-second tour, hosted by the cat. Click to play.</sub>
+  <sub><a href="assets/pova-launch.mp4">Watch it with sound (MP4)</a> · music: Sascha Ende, ende.app (CC BY 4.0)</sub>
 </p>
 
 <p align="center">
