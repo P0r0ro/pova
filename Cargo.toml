@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "btop-style YouTube Music player with a built-in cava visualizer"
 license = "MIT"
+repository = "https://github.com/P0r0ro/pova"
+readme = "README.md"
+keywords = ["youtube-music", "tui", "visualizer", "cava", "btop"]
+categories = ["multimedia::audio", "command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.104"
