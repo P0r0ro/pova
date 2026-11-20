@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use futures::{StreamExt, TryStreamExt};
+use futures::StreamExt;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use ytmapi_rs::YtMusic;
 use ytmapi_rs::auth::BrowserToken;
@@ -57,14 +57,40 @@ pub enum View {
 
 #[derive(Debug)]
 pub enum YtmReq {
-    Load { token: u64, view: View },
-    Radio { seed: String },
-    Rate { video_id: String, liked: bool },
-    Lyrics { video_id: String },
+    Load {
+        token: u64,
+        view: View,
+    },
+    Radio {
+        seed: String,
+    },
+    Rate {
+        video_id: String,
+        liked: bool,
+    },
+    Lyrics {
+        video_id: String,
+    },
+    /// Autocomplete suggestions for a partially typed query.
+    Suggest {
+        query: String,
+    },
+}
+
+/// One autocomplete entry.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Suggestion {
+    pub text: String,
+    /// From the signed-in user's own search history.
+    pub history: bool,
 }
 
 #[derive(Debug)]
 pub enum YtmEvent {
+    Suggestions {
+        query: String,
+        items: Vec<Suggestion>,
+    },
     Auth {
         logged_in: bool,
         message: Option<String>,
@@ -232,6 +258,22 @@ async fn handle(client: &Client, req: YtmReq) -> YtmEvent {
             .filter(|l| !l.trim().is_empty());
             YtmEvent::Lyrics { video_id, text }
         }
+        YtmReq::Suggest { query } => {
+            let items = match with_yt!(client, yt => yt.get_search_suggestions(query.as_str()).await) {
+                Ok(list) => list
+                    .into_iter()
+                    .map(|s| Suggestion {
+                        text: s.get_text(),
+                        history: s.suggestion_type == ytmapi_rs::common::SuggestionType::History,
+                    })
+                    .collect(),
+                Err(e) => {
+                    tracing::debug!("suggestions for {query:?}: {e}");
+                    Vec::new()
+                }
+            };
+            YtmEvent::Suggestions { query, items }
+        }
     }
 }
 
@@ -245,8 +287,11 @@ fn need_auth(client: &Client) -> anyhow::Result<&YtMusic<BrowserToken>> {
 async fn load(client: &Client, view: &View) -> anyhow::Result<(String, Vec<Item>)> {
     Ok(match view {
         View::Search { filter, query } => {
-            let items = search(client, *filter, query).await?;
-            (format!("{} · {}", filter.label(), query), items)
+            let (items, corrected) = search_corrected(client, *filter, query).await?;
+            match corrected {
+                Some(c) => (format!("{} · showing results for “{c}”", filter.label()), items),
+                None => (format!("{} · {}", filter.label(), query), items),
+            }
         }
         View::Album(id) => {
             let album = with_yt!(client, yt => yt.get_album(AlbumID::from_raw(id.clone())).await)?;
@@ -381,7 +426,21 @@ async fn playlist_tracks(client: &Client, id: &str) -> anyhow::Result<Vec<Item>>
         format!("VL{id}")
     };
     let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw(browse_id));
-    let pages: Vec<Vec<PlaylistItem>> = with_yt!(client, yt => yt.stream(&query).take(MAX_PAGES).try_collect().await)?;
+    // Keep every page that parsed: one odd item on a later page (ytmapi-rs
+    // parse error) must not throw away the whole list.
+    let results: Vec<ytmapi_rs::Result<Vec<PlaylistItem>>> =
+        with_yt!(client, yt => yt.stream(&query).take(MAX_PAGES).collect().await);
+    let mut pages: Vec<Vec<PlaylistItem>> = Vec::new();
+    for r in results {
+        match r {
+            Ok(page) => pages.push(page),
+            Err(e) if pages.is_empty() => return Err(e.into()),
+            Err(e) => {
+                tracing::warn!("playlist {id}: stopping after {} pages: {e}", pages.len());
+                break;
+            }
+        }
+    }
     Ok(pages
         .into_iter()
         .flatten()
@@ -412,6 +471,53 @@ fn playlist_item(item: PlaylistItem) -> Option<Track> {
             thumbnail: best_thumb(&v.thumbnails),
             liked: like_flag(&v.like_status),
         }),
+        _ => None,
+    }
+}
+
+/// Search like the YouTube Music search bar: if the query is misspelled, YTM
+/// answers with a "Did you mean / Showing results for" block that ytmapi-rs
+/// parses as zero results. In that case take YTM's corrected query from the
+/// raw response and search again with it.
+async fn search_corrected(
+    client: &Client,
+    filter: SearchFilter,
+    query: &str,
+) -> anyhow::Result<(Vec<Item>, Option<String>)> {
+    let items = search(client, filter, query).await?;
+    if !items.is_empty() {
+        return Ok((items, None));
+    }
+    let Some(corrected) = corrected_query(client, query).await else {
+        return Ok((items, None));
+    };
+    if corrected.eq_ignore_ascii_case(query.trim()) {
+        return Ok((items, None));
+    }
+    tracing::info!("search {query:?}: using YTM correction {corrected:?}");
+    let items = search(client, filter, &corrected).await?;
+    Ok((items, Some(corrected)))
+}
+
+/// YTM's spelling correction for `query`, if it offers one.
+async fn corrected_query(client: &Client, query: &str) -> Option<String> {
+    use ytmapi_rs::query::SearchQuery;
+    use ytmapi_rs::query::search::BasicSearch;
+    let q: SearchQuery<BasicSearch> = query.to_string().into();
+    let raw = with_yt!(client, yt => yt.raw_json_query(q).await).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    find_correction(&json)
+}
+
+fn find_correction(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::Object(map) => map
+            .get("correctedQueryEndpoint")
+            .and_then(|e| e.pointer("/searchEndpoint/query"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .or_else(|| map.values().find_map(find_correction)),
+        serde_json::Value::Array(items) => items.iter().find_map(find_correction),
         _ => None,
     }
 }
@@ -579,5 +685,21 @@ mod tests {
             }
             other => panic!("lyrics: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod correction_tests {
+    use super::find_correction;
+
+    #[test]
+    fn finds_did_you_mean_query() {
+        let json: serde_json::Value = serde_json::from_str(
+            r#"{"contents":{"tabs":[{"sections":[{"itemSectionRenderer":{"contents":[{"didYouMeanRenderer":
+            {"correctedQueryEndpoint":{"searchEndpoint":{"query":"call me when you're sober","params":"x"}}}}]}}]}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(find_correction(&json).as_deref(), Some("call me when you're sober"));
+        assert_eq!(find_correction(&serde_json::json!({"a": [1, {"b": null}]})), None);
     }
 }

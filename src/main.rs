@@ -7,6 +7,7 @@ mod keymap;
 mod lyrics;
 mod model;
 mod player;
+mod resolve;
 mod theme;
 mod ui;
 mod viz;
@@ -215,6 +216,10 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
     let (lyrics_ev_tx, mut lyrics_rx) = unbounded_channel();
     tokio::spawn(lyrics::run(lyrics_req_rx, lyrics_ev_tx));
 
+    let (resolve_tx, resolve_req_rx) = unbounded_channel();
+    let (resolve_ev_tx, mut resolve_rx) = unbounded_channel();
+    tokio::spawn(resolve::run(resolve_req_rx, resolve_ev_tx));
+
     let (art_tx, art_req_rx) = unbounded_channel();
     let (art_ev_tx, mut art_rx) = unbounded_channel();
     tokio::spawn(art::run(paths.cache_dir.join("art"), art_req_rx, art_ev_tx));
@@ -253,6 +258,7 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
         ytm: ytm_tx,
         lyrics: lyrics_tx,
         art: art_tx,
+        resolve: resolve_tx,
     };
     let mut app = App::new(cfg, paths, state, keymap, channels, picker, art_proto);
     for w in key_warnings {
@@ -286,6 +292,7 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
                 Some(ev) = ytm_rx.recv() => app.on_ytm(ev),
                 Some(ev) = lyrics_rx.recv() => app.on_lyrics(ev),
                 Some(ev) = art_rx.recv() => app.on_art(ev),
+                Some(ev) = resolve_rx.recv() => app.on_resolved(ev),
                 Some(done) = resized_rx.recv() => {
                     match done {
                         Ok(resp) => {

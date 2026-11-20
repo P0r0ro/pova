@@ -1,8 +1,8 @@
 //! Application state and the reducer that reacts to input and actor events.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
@@ -18,9 +18,10 @@ use crate::lyrics::{Lyrics, LyricsEvent, LyricsReq};
 use crate::model::{Item, Track, video_id_from_url};
 use crate::player::mpv::{PlayerCmd, PlayerEvent};
 use crate::player::queue::{Queue, Repeat};
+use crate::resolve::{ResolveReq, Resolved};
 use crate::theme::{self, Theme};
 use crate::viz::Frame;
-use crate::ytm::{SearchFilter, View, YtmEvent, YtmReq};
+use crate::ytm::{SearchFilter, Suggestion, View, YtmEvent, YtmReq};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -109,6 +110,41 @@ pub struct SearchState {
     pub editing: bool,
     pub filter: SearchFilter,
     pub stack: Vec<ListView>,
+    /// Autocomplete entries for `suggest_for`.
+    pub suggestions: Vec<Suggestion>,
+    pub suggest_for: String,
+    /// Highlighted suggestion (↑/↓); None = the typed text.
+    pub suggest_sel: Option<usize>,
+    /// When to ask YTM for suggestions (debounced while typing).
+    pub suggest_due: Option<Instant>,
+}
+
+impl SearchState {
+    /// Suggestions are shown only while typing and only for the current text.
+    pub fn visible_suggestions(&self) -> &[Suggestion] {
+        if self.editing && !self.input.trim().is_empty() && self.suggest_for == self.input.trim() {
+            &self.suggestions
+        } else {
+            &[]
+        }
+    }
+
+    /// Inline completion: the rest of the top (or selected) suggestion when it
+    /// extends what was typed, case-insensitively.
+    pub fn ghost(&self) -> Option<&str> {
+        let list = self.visible_suggestions();
+        let top = list.get(self.suggest_sel.unwrap_or(0))?;
+        if self.cursor != self.input.chars().count() {
+            return None;
+        }
+        let typed = self.input.to_lowercase();
+        let cand = top.text.to_lowercase();
+        if cand.len() > typed.len() && cand.starts_with(&typed) && top.text.is_char_boundary(typed.len()) {
+            Some(&top.text[typed.len()..])
+        } else {
+            None
+        }
+    }
 }
 
 pub struct LibraryState {
@@ -159,6 +195,7 @@ pub enum Hit {
     List,
     SearchFilter(SearchFilter),
     LibSection(LibSection),
+    Suggestion(usize),
 }
 
 /// Clickable regions, rebuilt every frame.
@@ -196,6 +233,13 @@ enum Pending {
     Enqueue(EnqueueMode),
     /// Play the first track of the result (`--play`).
     PlayFirst,
+    /// The signed-in user's liked songs, for like status everywhere.
+    LikedSet,
+}
+
+/// Is `track` liked? Known statuses (`likes`) win over what the list said.
+pub fn is_liked(likes: &HashMap<String, bool>, track: &Track) -> bool {
+    likes.get(&track.video_id).copied().or(track.liked).unwrap_or(false)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -217,6 +261,7 @@ pub struct Channels {
     pub ytm: UnboundedSender<YtmReq>,
     pub lyrics: UnboundedSender<LyricsReq>,
     pub art: UnboundedSender<ArtReq>,
+    pub resolve: UnboundedSender<ResolveReq>,
 }
 
 pub struct App {
@@ -245,6 +290,10 @@ pub struct App {
     pub picker: Option<Picker>,
     pub flash: Option<Flash>,
     pub logged_in: bool,
+    /// Like status per video id, from Liked songs + lists + likes made here.
+    pub likes: HashMap<String, bool>,
+    /// Liked songs finished loading (unknown status then means "not liked").
+    pub likes_loaded: bool,
     pub overlay: Option<Overlay>,
     pub hits: HitMap,
     pub quit: bool,
@@ -258,6 +307,21 @@ pub struct App {
     last_click: Option<(Instant, u16, u16)>,
     load_started: Option<Instant>,
     lyrics_requested: Option<String>,
+    /// Pre-resolved direct audio URLs: video id -> (url, use-before).
+    streams: HashMap<String, (String, SystemTime)>,
+    /// Video ids sent to the resolver and not answered yet.
+    resolving: HashSet<String>,
+    /// Direct stream URL -> video id (mpv reports the URL as `path`).
+    url_vid: HashMap<String, String>,
+    /// Selected list track and since when (prefetch after a short dwell).
+    dwell: Option<(String, Instant)>,
+    dwell_fired: Option<String>,
+    /// Current track was started from a pre-resolved URL.
+    direct_loaded: Option<String>,
+    /// Tracks whose direct URL failed once (fall back to mpv's yt-dlp hook).
+    direct_failed: HashSet<String>,
+    /// For the "track started in N ms" log line.
+    start_timer: Option<(Instant, bool)>,
 }
 
 impl App {
@@ -303,6 +367,8 @@ impl App {
             picker,
             flash: None,
             logged_in: false,
+            likes: HashMap::new(),
+            likes_loaded: false,
             overlay: None,
             hits: HitMap::default(),
             quit: false,
@@ -316,6 +382,14 @@ impl App {
             last_click: None,
             load_started: None,
             lyrics_requested: None,
+            streams: HashMap::new(),
+            resolving: HashSet::new(),
+            url_vid: HashMap::new(),
+            dwell: None,
+            dwell_fired: None,
+            direct_loaded: None,
+            direct_failed: HashSet::new(),
+            start_timer: None,
             cfg,
             paths,
         }
@@ -372,6 +446,16 @@ impl App {
 
     /// Per-frame housekeeping. Returns true if a redraw is needed.
     pub fn tick(&mut self) -> bool {
+        self.update_dwell();
+        if let Some(due) = self.search.suggest_due
+            && Instant::now() >= due
+        {
+            self.search.suggest_due = None;
+            let query = self.search.input.trim().to_string();
+            if self.search.editing && !query.is_empty() && query != self.search.suggest_for {
+                let _ = self.tx.ytm.send(YtmReq::Suggest { query });
+            }
+        }
         if let Some(f) = &self.flash
             && Instant::now() > f.until
         {
@@ -388,21 +472,23 @@ impl App {
             return;
         }
         self.queue.current = Some(i);
-        let url = self.queue.get(i).map(Track::url).unwrap_or_default();
+        let Some(track) = self.queue.get(i).cloned() else {
+            return;
+        };
+        let (url, direct) = self.play_url(&track);
+        self.direct_loaded = direct.then(|| track.video_id.clone());
+        self.start_timer = Some((Instant::now(), direct));
         let next = self.desired_next();
-        self.next_sent = next.as_ref().map(|(id, _)| id.clone());
-        self.player(PlayerCmd::Load {
-            url,
-            next: next.map(|(_, u)| u),
-        });
+        self.next_sent = next.clone();
+        self.player(PlayerCmd::Load { url, next });
         self.player.time = 0.0;
         self.player.duration = self.queue.get(i).and_then(|t| t.duration).unwrap_or(0.0);
         self.load_started = Some(Instant::now());
         self.on_track_changed();
     }
 
-    /// (video id, url) mpv should preload after the current track.
-    fn desired_next(&self) -> Option<(String, String)> {
+    /// URL mpv should preload after the current track.
+    fn desired_next(&mut self) -> Option<String> {
         if self.queue.repeat == Repeat::One {
             return None; // mpv loops the file itself (loop-file)
         }
@@ -410,7 +496,99 @@ impl App {
         if Some(n) == self.queue.current {
             return None;
         }
-        self.queue.get(n).map(|t| (t.video_id.clone(), t.url()))
+        let track = self.queue.get(n)?.clone();
+        Some(self.play_url(&track).0)
+    }
+
+    /// Pre-resolved direct URL if fresh, else the YouTube Music link (mpv's
+    /// yt-dlp hook resolves it, ~3 s). Returns (url, is_direct).
+    fn play_url(&mut self, track: &Track) -> (String, bool) {
+        let fresh = self
+            .streams
+            .get(&track.video_id)
+            .filter(|(_, until)| *until > SystemTime::now() && !self.direct_failed.contains(&track.video_id))
+            .map(|(u, _)| u.clone());
+        match fresh {
+            Some(url) => {
+                self.url_vid.insert(url.clone(), track.video_id.clone());
+                (url, true)
+            }
+            None => (track.url(), false),
+        }
+    }
+
+    /// Ask the resolver for a direct URL ahead of time (no-op if cached/pending).
+    pub fn prefetch(&mut self, video_id: &str) {
+        let fresh = self
+            .streams
+            .get(video_id)
+            .is_some_and(|(_, until)| *until > SystemTime::now());
+        // Keep the resolver queue short: it's a courtesy, not a crawler.
+        if fresh
+            || self.direct_failed.contains(video_id)
+            || self.resolving.contains(video_id)
+            || self.resolving.len() >= 4
+        {
+            return;
+        }
+        self.resolving.insert(video_id.to_string());
+        let _ = self.tx.resolve.send(ResolveReq {
+            video_id: video_id.to_string(),
+        });
+    }
+
+    /// Prefetch the next two tracks of the queue.
+    fn prefetch_upcoming(&mut self) {
+        let Some(n) = self.queue.next_index() else { return };
+        let ids: Vec<String> = [Some(n), (n + 1 < self.queue.len()).then_some(n + 1)]
+            .into_iter()
+            .flatten()
+            .filter(|&i| Some(i) != self.queue.current)
+            .filter_map(|i| self.queue.get(i).map(|t| t.video_id.clone()))
+            .collect();
+        for id in ids {
+            self.prefetch(&id);
+        }
+    }
+
+    pub fn on_resolved(&mut self, ev: Resolved) {
+        self.resolving.remove(&ev.video_id);
+        if let Some(stream) = ev.stream {
+            self.streams.insert(ev.video_id, stream);
+            // Upgrade mpv's preloaded next entry to the direct URL.
+            self.sync_next();
+        }
+    }
+
+    /// Prefetch the track the user has been resting on in a list.
+    fn update_dwell(&mut self) {
+        let selected = match self.tab {
+            Tab::Search => self
+                .search
+                .stack
+                .last()
+                .and_then(|l| l.selected())
+                .and_then(Item::as_track),
+            Tab::Library => self
+                .library
+                .stack
+                .last()
+                .and_then(|l| l.selected())
+                .and_then(Item::as_track),
+            Tab::Queue => self.queue_state.selected().and_then(|i| self.queue.get(i)),
+            _ => None,
+        }
+        .map(|t| t.video_id.clone());
+        match (&self.dwell, selected) {
+            (Some((id, since)), Some(sel)) if *id == sel => {
+                if since.elapsed() >= Duration::from_millis(500) && self.dwell_fired.as_deref() != Some(&sel) {
+                    self.dwell_fired = Some(sel.clone());
+                    self.prefetch(&sel);
+                }
+            }
+            (_, Some(sel)) => self.dwell = Some((sel, Instant::now())),
+            (_, None) => self.dwell = None,
+        }
     }
 
     /// Make mpv's "next" entry match the queue.
@@ -418,16 +596,17 @@ impl App {
         if self.queue.current.is_none() || self.player.idle && self.load_started.is_none() {
             return;
         }
+        self.prefetch_upcoming();
         let want = self.desired_next();
-        let want_id = want.as_ref().map(|(id, _)| id.clone());
-        if want_id != self.next_sent {
-            self.next_sent = want_id;
-            self.player(PlayerCmd::SetNext(want.map(|(_, u)| u)));
+        if want != self.next_sent {
+            self.next_sent = want.clone();
+            self.player(PlayerCmd::SetNext(want));
         }
     }
 
     fn on_track_changed(&mut self) {
         self.dirty = true;
+        self.prefetch_upcoming();
         self.lyrics_scroll = None;
         let Some(track) = self.current().cloned() else { return };
         // Lyrics
@@ -553,6 +732,12 @@ impl App {
             }
             PlayerEvent::TimePos(t) => {
                 self.player.time = t;
+                if t > 0.0
+                    && let Some((t0, direct)) = self.start_timer.take()
+                {
+                    let how = if direct { "pre-resolved URL" } else { "yt-dlp hook" };
+                    tracing::info!("track started in {} ms ({how})", t0.elapsed().as_millis());
+                }
                 if matches!(
                     self.lyrics,
                     LyricsState::Found {
@@ -573,7 +758,9 @@ impl App {
             PlayerEvent::Buffering(b) => self.player.buffering = b,
             PlayerEvent::Path(Some(path)) => {
                 self.load_started = None;
-                let Some(vid) = video_id_from_url(&path) else { return };
+                let Some(vid) = video_id_from_url(&path).or_else(|| self.url_vid.get(&path).cloned()) else {
+                    return;
+                };
                 if self.current().map(|t| t.video_id.as_str()) != Some(vid.as_str()) {
                     // mpv advanced to the preloaded next track (gapless).
                     let idx = self
@@ -609,6 +796,15 @@ impl App {
             }
             PlayerEvent::EndFile { reason, error } => {
                 if reason == "error" {
+                    // A pre-resolved URL can go stale; retry once via yt-dlp.
+                    if let (Some(direct), Some(cur)) = (self.direct_loaded.clone(), self.queue.current)
+                        && self.current().is_some_and(|t| t.video_id == direct)
+                        && self.direct_failed.insert(direct.clone())
+                    {
+                        tracing::info!("direct stream for {direct} failed; retrying via yt-dlp hook");
+                        self.play_index(cur);
+                        return;
+                    }
                     self.load_started = None;
                     let what = self.current().map(|t| t.title.clone()).unwrap_or_default();
                     self.flash(
@@ -635,46 +831,53 @@ impl App {
     pub fn on_ytm(&mut self, ev: YtmEvent) {
         self.dirty = true;
         match ev {
+            YtmEvent::Suggestions { query, items } => {
+                // Ignore stale answers for text that has since changed.
+                if query == self.search.input.trim() {
+                    self.search.suggest_for = query;
+                    self.search.suggestions = items;
+                    self.search.suggest_sel = None;
+                }
+            }
             YtmEvent::Auth { logged_in, message } => {
                 self.logged_in = logged_in;
+                if logged_in {
+                    // Learn what's already liked so ♥ shows and `f` toggles correctly.
+                    let token = self.token();
+                    self.pending.insert(token, Pending::LikedSet);
+                    let _ = self.tx.ytm.send(YtmReq::Load {
+                        token,
+                        view: View::LikedSongs,
+                    });
+                }
                 if let Some(m) = message {
                     self.flash(m, true);
                 }
             }
-            YtmEvent::Loaded { token, title, items } => match self.pending.remove(&token) {
-                Some(Pending::View) => {
-                    if let Some(lv) = self.find_view(token) {
-                        lv.loading = false;
-                        if lv.title.is_empty() || !matches!(lv.view, View::Search { .. }) {
-                            lv.title = title;
-                        }
-                        lv.items = items;
-                        let first = lv.items.iter().position(|i| !matches!(i, Item::Header(_)));
-                        lv.state.select(first);
-                        if lv.items.is_empty() {
-                            lv.error = Some("Nothing found".into());
+            YtmEvent::Loaded { token, title, items } => {
+                if self.logged_in {
+                    // Signed-in lists carry the user's like status; remember it.
+                    for t in items.iter().filter_map(Item::as_track) {
+                        if let Some(l) = t.liked {
+                            self.likes.insert(t.video_id.clone(), l);
                         }
                     }
                 }
-                Some(Pending::Enqueue(mode)) => {
-                    let tracks: Vec<Track> = items.iter().filter_map(Item::as_track).cloned().collect();
-                    if tracks.is_empty() {
-                        self.flash("No playable tracks", true);
-                    } else {
-                        self.enqueue(tracks, mode);
-                    }
-                }
-                Some(Pending::PlayFirst) => match items.iter().find_map(Item::as_track) {
-                    Some(t) => self.enqueue(vec![t.clone()], EnqueueMode::PlayNow),
-                    None => self.flash("No results", true),
-                },
-                None => {}
-            },
+                self.on_loaded(token, title, items);
+            }
             YtmEvent::Failed { token, message } => {
                 if let Some(token) = token {
-                    self.pending.remove(&token);
+                    if let Some(Pending::LikedSet) = self.pending.remove(&token) {
+                        // Don't block `f` forever; fall back to known statuses.
+                        tracing::warn!("loading liked songs failed: {message}");
+                        self.likes_loaded = true;
+                        return;
+                    }
                     if let Some(lv) = self.find_view(token) {
                         lv.loading = false;
+                        if lv.title.is_empty() {
+                            lv.title = "Couldn't load".into();
+                        }
                         lv.error = Some(message);
                         return;
                     }
@@ -725,6 +928,7 @@ impl App {
                 }
             }
             YtmEvent::Rated { video_id, liked } => {
+                self.likes.insert(video_id.clone(), liked);
                 for e in &mut self.queue.entries {
                     if e.track.video_id == video_id {
                         e.track.liked = Some(liked);
@@ -744,6 +948,51 @@ impl App {
                         None => LyricsState::Missing,
                     };
                 }
+            }
+        }
+    }
+
+    fn on_loaded(&mut self, token: u64, title: String, items: Vec<Item>) {
+        match self.pending.remove(&token) {
+            Some(Pending::View) => {
+                if let Some(lv) = self.find_view(token) {
+                    lv.loading = false;
+                    if lv.title.is_empty() || !matches!(lv.view, View::Search { .. }) {
+                        lv.title = title;
+                    }
+                    lv.items = items;
+                    let first = lv.items.iter().position(|i| !matches!(i, Item::Header(_)));
+                    lv.state.select(first);
+                    if lv.items.is_empty() {
+                        lv.error = Some("Nothing found".into());
+                    }
+                    // The top search hit is the likeliest next play.
+                    if matches!(lv.view, View::Search { .. })
+                        && let Some(id) = lv.items.iter().find_map(Item::as_track).map(|t| t.video_id.clone())
+                    {
+                        self.prefetch(&id);
+                    }
+                }
+            }
+            Some(Pending::Enqueue(mode)) => {
+                let tracks: Vec<Track> = items.iter().filter_map(Item::as_track).cloned().collect();
+                if tracks.is_empty() {
+                    self.flash("No playable tracks", true);
+                } else {
+                    self.enqueue(tracks, mode);
+                }
+            }
+            Some(Pending::PlayFirst) => match items.iter().find_map(Item::as_track) {
+                Some(t) => self.enqueue(vec![t.clone()], EnqueueMode::PlayNow),
+                None => self.flash("No results", true),
+            },
+            None => {}
+            Some(Pending::LikedSet) => {
+                for t in items.iter().filter_map(Item::as_track) {
+                    self.likes.insert(t.video_id.clone(), true);
+                }
+                self.likes_loaded = true;
+                self.dirty = true;
             }
         }
     }
@@ -837,9 +1086,11 @@ impl App {
             Event::Mouse(m) => self.on_mouse(m),
             Event::Resize(..) => self.dirty = true,
             Event::Paste(text) if self.search.editing => {
+                let before = self.search.input.clone();
                 for c in text.chars().filter(|c| !c.is_control()) {
                     self.insert_char(c);
                 }
+                self.on_input_changed(&before);
                 self.dirty = true;
             }
             _ => {}
@@ -878,14 +1129,31 @@ impl App {
 
     /// Text input for the search box. Returns true if the key was consumed.
     fn on_edit_key(&mut self, k: KeyEvent) -> bool {
-        let s = &mut self.search;
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let n_sugg = self.search.visible_suggestions().len();
+        let before = self.search.input.clone();
+        let s = &mut self.search;
         match k.code {
             KeyCode::Enter => {
+                // Search the highlighted suggestion, like the YTM search bar.
+                if let Some(text) = s
+                    .suggest_sel
+                    .and_then(|i| s.visible_suggestions().get(i))
+                    .map(|x| x.text.clone())
+                {
+                    s.cursor = text.chars().count();
+                    s.input = text;
+                }
                 s.editing = false;
+                s.suggest_sel = None;
                 self.submit_search();
             }
+            KeyCode::Esc if s.suggest_sel.is_some() => s.suggest_sel = None,
             KeyCode::Esc => s.editing = false,
+            KeyCode::Down if n_sugg > 0 => {
+                s.suggest_sel = Some(s.suggest_sel.map_or(0, |i| (i + 1).min(n_sugg - 1)));
+            }
+            KeyCode::Up if n_sugg > 0 => s.suggest_sel = s.suggest_sel.and_then(|i| i.checked_sub(1)),
             KeyCode::Down if !s.stack.is_empty() => s.editing = false,
             KeyCode::Backspace if ctrl => {
                 s.input.clear();
@@ -908,6 +1176,13 @@ impl App {
                 }
             }
             KeyCode::Left => s.cursor = s.cursor.saturating_sub(1),
+            // → at the end of the line accepts the inline completion.
+            KeyCode::Right | KeyCode::End if s.cursor == s.input.chars().count() && s.ghost().is_some() => {
+                let full = format!("{}{}", s.input, s.ghost().unwrap_or_default());
+                s.cursor = full.chars().count();
+                s.input = full;
+                s.suggest_sel = None;
+            }
             KeyCode::Right => s.cursor = (s.cursor + 1).min(s.input.chars().count()),
             KeyCode::Home => s.cursor = 0,
             KeyCode::End => s.cursor = s.input.chars().count(),
@@ -916,7 +1191,21 @@ impl App {
             KeyCode::Char(c) if !ctrl => self.insert_char(c),
             _ => return false,
         }
+        self.on_input_changed(&before);
         true
+    }
+
+    /// Debounce an autocomplete request after the text changed.
+    fn on_input_changed(&mut self, before: &str) {
+        if self.search.input == before {
+            return;
+        }
+        self.search.suggest_sel = None;
+        self.search.suggest_due = if self.search.input.trim().is_empty() {
+            None
+        } else {
+            Some(Instant::now() + Duration::from_millis(180))
+        };
     }
 
     fn cycle_filter(&mut self, forward: bool) {
@@ -1075,7 +1364,12 @@ impl App {
                     self.flash("Liking songs needs a cookie login (see README)", true);
                     return;
                 }
-                let liked = !t.liked.unwrap_or(false);
+                let known = self.likes_loaded || self.likes.contains_key(&t.video_id) || t.liked.is_some();
+                if !known {
+                    self.flash("Still loading your liked songs — try again in a moment", false);
+                    return;
+                }
+                let liked = !is_liked(&self.likes, t);
                 let _ = self.tx.ytm.send(YtmReq::Rate {
                     video_id: t.video_id.clone(),
                     liked,
@@ -1460,6 +1754,15 @@ impl App {
                     }
                 }
                 Hit::LibSection(s) => self.switch_library(s),
+                Hit::Suggestion(i) => {
+                    if let Some(text) = self.search.visible_suggestions().get(i).map(|x| x.text.clone()) {
+                        self.search.cursor = text.chars().count();
+                        self.search.input = text;
+                        self.search.editing = false;
+                        self.search.suggest_sel = None;
+                        self.submit_search();
+                    }
+                }
                 Hit::List => {
                     if let Some((area, offset)) = self.hits.list {
                         let idx = offset + (y - area.y) as usize;
@@ -1494,5 +1797,378 @@ pub mod tests_support {
             },
             1,
         )
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+
+    fn app() -> (App, UnboundedReceiver<YtmReq>) {
+        let (p, _) = unbounded_channel();
+        let (y, yrx) = unbounded_channel();
+        let (l, _) = unbounded_channel();
+        let (a, _) = unbounded_channel();
+        let tmp = std::env::temp_dir().join("pova-search-test");
+        let paths = Paths {
+            config_dir: tmp.clone(),
+            cache_dir: tmp.clone(),
+            state_dir: tmp.clone(),
+            runtime_dir: tmp,
+        };
+        let (keymap, _) = Keymap::new(&Default::default());
+        let app = App::new(
+            Config::default(),
+            paths,
+            State::default(),
+            keymap,
+            Channels {
+                player: p,
+                ytm: y,
+                lyrics: l,
+                art: a,
+                resolve: unbounded_channel().0,
+            },
+            None,
+            None,
+        );
+        (app, yrx)
+    }
+
+    fn key(app: &mut App, code: KeyCode) {
+        app.on_terminal(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+
+    fn sugg(text: &str) -> Suggestion {
+        Suggestion {
+            text: text.into(),
+            history: false,
+        }
+    }
+
+    #[test]
+    fn typing_debounces_then_requests_suggestions() {
+        let (mut app, mut rx) = app();
+        app.dispatch(Action::TabSearch);
+        for c in "call me".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        assert!(rx.try_recv().is_err(), "no request before the debounce");
+        app.search.suggest_due = Some(Instant::now());
+        app.tick();
+        assert!(matches!(rx.try_recv(), Ok(YtmReq::Suggest { query }) if query == "call me"));
+    }
+
+    #[test]
+    fn stale_suggestions_ignored_and_ghost_completion() {
+        let (mut app, _rx) = app();
+        app.dispatch(Action::TabSearch);
+        for c in "Call Me".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.on_ytm(YtmEvent::Suggestions {
+            query: "cal".into(),
+            items: vec![sugg("calvin harris")],
+        });
+        assert!(app.search.visible_suggestions().is_empty());
+        app.on_ytm(YtmEvent::Suggestions {
+            query: "Call Me".into(),
+            items: vec![sugg("call me when you're sober"), sugg("call me maybe")],
+        });
+        // Case-insensitive inline completion; → accepts it.
+        assert_eq!(app.search.ghost(), Some(" when you're sober"));
+        key(&mut app, KeyCode::Right);
+        assert_eq!(app.search.input, "Call Me when you're sober");
+    }
+
+    #[test]
+    fn down_enter_searches_selected_suggestion() {
+        let (mut app, mut rx) = app();
+        app.dispatch(Action::TabSearch);
+        for c in "call me".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        app.on_ytm(YtmEvent::Suggestions {
+            query: "call me".into(),
+            items: vec![sugg("call me when you're sober"), sugg("call me maybe")],
+        });
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.search.suggest_sel, Some(1));
+        key(&mut app, KeyCode::Enter);
+        assert!(!app.search.editing);
+        assert_eq!(app.search.input, "call me maybe");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(YtmReq::Load { view: View::Search { query, .. }, .. }) if query == "call me maybe"
+        ));
+    }
+
+    fn track(id: &str) -> Track {
+        Track {
+            video_id: id.into(),
+            title: id.into(),
+            artists: String::new(),
+            album: None,
+            album_id: None,
+            duration: None,
+            thumbnail: None,
+            liked: None,
+        }
+    }
+
+    /// Sign in and answer the Liked-songs request with `liked_ids`.
+    fn signed_in(liked_ids: &[&str]) -> (App, UnboundedReceiver<YtmReq>) {
+        let (mut app, mut rx) = app();
+        app.on_ytm(YtmEvent::Auth {
+            logged_in: true,
+            message: None,
+        });
+        let token = match rx.try_recv() {
+            Ok(YtmReq::Load {
+                token,
+                view: View::LikedSongs,
+            }) => token,
+            other => panic!("expected liked-songs load, got {other:?}"),
+        };
+        assert!(!app.likes_loaded);
+        let items = liked_ids.iter().map(|id| Item::Track(track(id))).collect();
+        app.on_ytm(YtmEvent::Loaded {
+            token,
+            title: "Liked songs".into(),
+            items,
+        });
+        assert!(app.likes_loaded);
+        (app, rx)
+    }
+
+    #[test]
+    fn already_liked_song_is_unliked_not_liked_again() {
+        let (mut app, mut rx) = signed_in(&["a"]);
+        // Search results carry no like status (liked: None).
+        app.queue.replace(vec![track("a"), track("b")], 0);
+        assert!(is_liked(&app.likes, app.current().unwrap()));
+        app.dispatch(Action::Like);
+        assert!(matches!(rx.try_recv(), Ok(YtmReq::Rate { video_id, liked: false }) if video_id == "a"));
+        app.on_ytm(YtmEvent::Rated {
+            video_id: "a".into(),
+            liked: false,
+        });
+        assert!(!is_liked(&app.likes, app.current().unwrap()));
+        // Not in Liked songs -> `f` likes it.
+        app.queue.current = Some(1);
+        app.dispatch(Action::Like);
+        assert!(matches!(rx.try_recv(), Ok(YtmReq::Rate { video_id, liked: true }) if video_id == "b"));
+    }
+
+    #[test]
+    fn like_waits_until_status_known() {
+        let (mut app, mut rx) = app();
+        app.on_ytm(YtmEvent::Auth {
+            logged_in: true,
+            message: None,
+        });
+        let token = match rx.try_recv() {
+            Ok(YtmReq::Load { token, .. }) => token,
+            other => panic!("{other:?}"),
+        };
+        app.queue.replace(vec![track("a")], 0);
+        app.dispatch(Action::Like);
+        assert!(rx.try_recv().is_err(), "must not guess while likes are loading");
+        // A failed load must not block liking forever.
+        app.on_ytm(YtmEvent::Failed {
+            token: Some(token),
+            message: "boom".into(),
+        });
+        assert!(app.likes_loaded);
+        app.dispatch(Action::Like);
+        assert!(matches!(rx.try_recv(), Ok(YtmReq::Rate { liked: true, .. })));
+    }
+
+    #[test]
+    fn lists_with_like_status_teach_the_cache() {
+        let (mut app, _rx) = signed_in(&[]);
+        let mut t = track("x");
+        t.liked = Some(true);
+        app.on_ytm(YtmEvent::Loaded {
+            token: 999,
+            title: String::new(),
+            items: vec![Item::Track(t)],
+        });
+        assert_eq!(app.likes.get("x"), Some(&true));
+    }
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+
+    struct Harness {
+        app: App,
+        player: UnboundedReceiver<PlayerCmd>,
+        resolve: UnboundedReceiver<ResolveReq>,
+    }
+
+    fn harness() -> Harness {
+        let (p, prx) = unbounded_channel();
+        let (r, rrx) = unbounded_channel();
+        let tmp = std::env::temp_dir().join("pova-resolve-test");
+        let paths = Paths {
+            config_dir: tmp.clone(),
+            cache_dir: tmp.clone(),
+            state_dir: tmp.clone(),
+            runtime_dir: tmp,
+        };
+        let (keymap, _) = Keymap::new(&Default::default());
+        let channels = Channels {
+            player: p,
+            ytm: unbounded_channel().0,
+            lyrics: unbounded_channel().0,
+            art: unbounded_channel().0,
+            resolve: r,
+        };
+        let app = App::new(Config::default(), paths, State::default(), keymap, channels, None, None);
+        Harness {
+            app,
+            player: prx,
+            resolve: rrx,
+        }
+    }
+
+    fn track(id: &str) -> Track {
+        Track {
+            video_id: id.into(),
+            title: id.into(),
+            artists: String::new(),
+            album: None,
+            album_id: None,
+            duration: None,
+            thumbnail: None,
+            liked: None,
+        }
+    }
+
+    fn drain<T>(rx: &mut UnboundedReceiver<T>) -> Vec<T> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    fn direct(id: &str) -> String {
+        format!("https://rr1.googlevideo.com/videoplayback?id={id}&expire=4102444800")
+    }
+
+    fn resolved(h: &mut Harness, id: &str) {
+        let url = direct(id);
+        let until = crate::resolve::expiry(&url, SystemTime::now());
+        h.app.on_resolved(Resolved {
+            video_id: id.into(),
+            stream: Some((url, until)),
+        });
+    }
+
+    #[test]
+    fn playing_prefetches_next_two() {
+        let mut h = harness();
+        h.app
+            .queue
+            .replace(vec![track("a"), track("b"), track("c"), track("d")], 0);
+        h.app.play_index(0);
+        let ids: Vec<String> = drain(&mut h.resolve).into_iter().map(|r| r.video_id).collect();
+        assert_eq!(ids, ["b", "c"]);
+    }
+
+    #[test]
+    fn resolved_urls_are_used_for_play_and_next() {
+        let mut h = harness();
+        h.app.queue.replace(vec![track("a"), track("b")], 0);
+        resolved(&mut h, "a");
+        resolved(&mut h, "b");
+        h.app.play_index(0);
+        let cmds = drain(&mut h.player);
+        assert!(
+            cmds.iter().any(
+                |c| matches!(c, PlayerCmd::Load { url, next: Some(n) } if *url == direct("a") && *n == direct("b"))
+            ),
+            "{cmds:?}"
+        );
+        // mpv reports the direct URL as its path; gapless advance must still map to "b".
+        h.app.on_player(PlayerEvent::Path(Some(direct("a"))));
+        assert_eq!(h.app.queue.current, Some(0));
+        h.app.on_player(PlayerEvent::Path(Some(direct("b"))));
+        assert_eq!(h.app.queue.current, Some(1));
+    }
+
+    #[test]
+    fn late_resolution_upgrades_preloaded_next() {
+        let mut h = harness();
+        h.app.queue.replace(vec![track("a"), track("b")], 0);
+        h.app.play_index(0);
+        // mpv starts playing "a" (via the yt-dlp hook) and leaves idle.
+        h.app.on_player(PlayerEvent::Idle(false));
+        h.app.on_player(PlayerEvent::Path(Some(track("a").url())));
+        drain(&mut h.player);
+        resolved(&mut h, "b");
+        let cmds = drain(&mut h.player);
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, PlayerCmd::SetNext(Some(u)) if *u == direct("b"))),
+            "{cmds:?}"
+        );
+    }
+
+    #[test]
+    fn failed_direct_url_retries_once_via_ytdlp() {
+        let mut h = harness();
+        h.app.queue.replace(vec![track("a"), track("b")], 0);
+        resolved(&mut h, "a");
+        h.app.play_index(0);
+        drain(&mut h.player);
+        h.app.on_player(PlayerEvent::EndFile {
+            reason: "error".into(),
+            error: Some("403".into()),
+        });
+        let cmds = drain(&mut h.player);
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, PlayerCmd::Load { url, .. } if *url == track("a").url())),
+            "{cmds:?}"
+        );
+        assert_eq!(h.app.queue.current, Some(0));
+    }
+
+    #[test]
+    fn expired_streams_are_not_used() {
+        let mut h = harness();
+        h.app.queue.replace(vec![track("a")], 0);
+        h.app.on_resolved(Resolved {
+            video_id: "a".into(),
+            stream: Some((direct("a"), SystemTime::now() - Duration::from_secs(1))),
+        });
+        h.app.play_index(0);
+        let cmds = drain(&mut h.player);
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, PlayerCmd::Load { url, .. } if *url == track("a").url()))
+        );
+    }
+
+    #[test]
+    fn dwelling_on_a_queue_row_prefetches_it() {
+        let mut h = harness();
+        h.app
+            .queue
+            .replace(vec![track("a"), track("b"), track("c"), track("d"), track("e")], 0);
+        h.app.tab = Tab::Queue;
+        h.app.queue_state.select(Some(4));
+        h.app.tick();
+        assert!(drain(&mut h.resolve).is_empty(), "no prefetch before the dwell");
+        h.app.dwell = Some(("e".into(), Instant::now() - Duration::from_secs(1)));
+        h.app.tick();
+        let ids: Vec<String> = drain(&mut h.resolve).into_iter().map(|r| r.video_id).collect();
+        assert_eq!(ids, ["e"]);
+        h.app.tick();
+        assert!(drain(&mut h.resolve).is_empty(), "only once per selection");
     }
 }

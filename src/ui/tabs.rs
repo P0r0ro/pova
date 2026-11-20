@@ -114,7 +114,11 @@ pub fn now_playing(f: &mut Frame, app: &mut App, area: Rect) {
         }
         *y += 1;
     };
-    let liked = if track.liked == Some(true) { " ♥" } else { "" };
+    let liked = if crate::app::is_liked(&app.likes, &track) {
+        " ♥"
+    } else {
+        ""
+    };
     put(
         f,
         &mut y,
@@ -264,9 +268,15 @@ pub fn queue(f: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 ""
             };
+            let heart = if crate::app::is_liked(&app.likes, tr) {
+                "♥"
+            } else {
+                ""
+            };
             Row::new(vec![
                 Cell::from(marker),
                 Cell::from(format!("{}", i + 1)).style(Style::new().fg(t.graph_text)),
+                Cell::from(heart).style(Style::new().fg(t.hi_fg)),
                 Cell::from(tr.title.clone()),
                 Cell::from(tr.artists.clone()).style(if played { style } else { Style::new().fg(t.graph_text) }),
                 Cell::from(tr.duration.map(format_time).unwrap_or_default()),
@@ -275,12 +285,13 @@ pub fn queue(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
     let num_w = (app.queue.len().to_string().len() as u16).max(2);
-    let header = Row::new(vec!["", "#", "title", "artist", "time"]).style(Style::new().fg(t.hi_fg));
+    let header = Row::new(vec!["", "#", "", "title", "artist", "time"]).style(Style::new().fg(t.hi_fg));
     let table = Table::new(
         rows,
         [
             Constraint::Length(1),
             Constraint::Length(num_w),
+            Constraint::Length(1),
             Constraint::Fill(5),
             Constraint::Fill(3),
             Constraint::Length(7),
@@ -302,7 +313,12 @@ pub fn queue(f: &mut Frame, app: &mut App, area: Rect) {
     app.hits.add(list_area, Hit::List);
 }
 
-fn item_rows<'a>(t: &Theme, items: &'a [Item], playing: Option<&str>) -> Vec<Row<'a>> {
+fn item_rows<'a>(
+    t: &Theme,
+    items: &'a [Item],
+    playing: Option<&str>,
+    likes: &std::collections::HashMap<String, bool>,
+) -> Vec<Row<'a>> {
     items
         .iter()
         .map(|item| match item {
@@ -314,7 +330,14 @@ fn item_rows<'a>(t: &Theme, items: &'a [Item], playing: Option<&str>) -> Vec<Row
                     Style::new().fg(t.main_fg)
                 };
                 Row::new(vec![
-                    Cell::from(if is_playing { "▶" } else { "♪" }).style(Style::new().fg(t.hi_fg)),
+                    Cell::from(if is_playing {
+                        "▶"
+                    } else if crate::app::is_liked(likes, tr) {
+                        "♥"
+                    } else {
+                        "♪"
+                    })
+                    .style(Style::new().fg(t.hi_fg)),
                     Cell::from(tr.title.as_str()),
                     Cell::from(tr.artists.as_str()).style(Style::new().fg(t.graph_text)),
                     Cell::from(tr.duration.map(format_time).unwrap_or_default()),
@@ -356,6 +379,7 @@ fn browse(f: &mut Frame, app: &mut App, area: Rect, library: bool) {
     let t = app.theme.clone();
     let playing = app.current().map(|tr| tr.video_id.clone());
     let back = app.keymap.hint(Action::Menu);
+    let likes = &app.likes;
     let stack: &mut Vec<ListView> = if library {
         &mut app.library.stack
     } else {
@@ -395,7 +419,7 @@ fn browse(f: &mut Frame, app: &mut App, area: Rect, library: bool) {
         centered_msg(f, body, &t, vec![Line::from(format!("{} loading…", spinner()))]);
         return;
     }
-    let rows = item_rows(&t, &lv.items, playing.as_deref());
+    let rows = item_rows(&t, &lv.items, playing.as_deref(), likes);
     let table = Table::new(
         rows,
         [
@@ -474,10 +498,12 @@ pub fn search(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         Span::styled(app.search.input.clone(), Style::new().fg(t.title))
     };
-    f.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled("⌕ ", prompt_style), text])),
-        input,
-    );
+    let mut line = vec![Span::styled("⌕ ", prompt_style), text];
+    // Inline completion from the top suggestion, dimmed (→ accepts it).
+    if let Some(ghost) = app.search.ghost() {
+        line.push(Span::styled(ghost.to_string(), Style::new().fg(t.inactive_fg)));
+    }
+    f.render_widget(Paragraph::new(Line::from(line)), input);
     if app.search.editing {
         let before: String = app.search.input.chars().take(app.search.cursor).collect();
         let cx = input.x + 2 + Span::raw(before.as_str()).width() as u16;
@@ -503,9 +529,75 @@ pub fn search(f: &mut Frame, app: &mut App, area: Rect) {
                 Line::from("tab switches the filter while typing"),
             ],
         );
+    } else {
+        browse(f, app, body, false);
+    }
+    suggestions_dropdown(
+        f,
+        app,
+        Rect {
+            y: input.y + 1,
+            height: area.height.saturating_sub(1),
+            ..area
+        },
+    );
+}
+
+/// Autocomplete list under the search box, drawn over the results.
+fn suggestions_dropdown(f: &mut Frame, app: &mut App, below: Rect) {
+    let t = app.theme.clone();
+    let list = app.search.visible_suggestions().to_vec();
+    if list.is_empty() || below.height < 3 {
         return;
     }
-    browse(f, app, body, false);
+    let rows = (list.len() as u16).min(below.height - 2);
+    let r = Rect {
+        height: rows + 2,
+        ..below
+    };
+    f.render_widget(ratatui::widgets::Clear, r);
+    let block = Block::bordered()
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::new().fg(t.hi_fg))
+        .style(Style::new().bg(t.main_bg))
+        .title_bottom(
+            Line::from(Span::styled(
+                "┐↑↓ select · → complete · enter search┌",
+                Style::new().fg(t.inactive_fg),
+            ))
+            .alignment(Alignment::Right),
+        );
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+    let typed = app.search.input.trim().to_lowercase();
+    for (i, sugg) in list.iter().take(rows as usize).enumerate() {
+        let y = inner.y + i as u16;
+        let row = Rect { y, height: 1, ..inner };
+        let selected = app.search.suggest_sel == Some(i);
+        let base = if selected {
+            Style::new().bg(t.selected_bg).fg(t.selected_fg)
+        } else {
+            Style::new().fg(t.main_fg)
+        };
+        // Like YTM: the typed part plain, the completion bold.
+        let split = if sugg.text.to_lowercase().starts_with(&typed) && sugg.text.is_char_boundary(typed.len()) {
+            typed.len()
+        } else {
+            0
+        };
+        let (head, tail) = sugg.text.split_at(split);
+        let icon = if sugg.history { "↺ " } else { "⌕ " };
+        let spans = vec![
+            Span::styled(
+                format!(" {icon}"),
+                base.fg(if selected { t.selected_fg } else { t.hi_fg }),
+            ),
+            Span::styled(head.to_string(), base),
+            Span::styled(tail.to_string(), base.add_modifier(Modifier::BOLD)),
+        ];
+        f.render_widget(Paragraph::new(Line::from(spans)).style(base), row);
+        app.hits.add(row, Hit::Suggestion(i));
+    }
 }
 
 pub fn library(f: &mut Frame, app: &mut App, area: Rect) {

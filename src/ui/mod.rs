@@ -440,6 +440,7 @@ mod tests {
                 ytm: y,
                 lyrics: l,
                 art: a,
+                resolve: unbounded_channel().0,
             },
             None,
             None,
@@ -475,6 +476,22 @@ mod tests {
             ];
             lv
         });
+        // Exercise the autocomplete dropdown too.
+        app.search.editing = true;
+        app.search.input = "call me".into();
+        app.search.cursor = 7;
+        app.search.suggest_for = "call me".into();
+        app.search.suggestions = vec![
+            crate::ytm::Suggestion {
+                text: "call me when you're sober".into(),
+                history: true,
+            },
+            crate::ytm::Suggestion {
+                text: "call me maybe".into(),
+                history: false,
+            },
+        ];
+        app.search.suggest_sel = Some(1);
         for (w, h) in [(20, 6), (60, 20), (89, 30), (120, 40), (250, 70)] {
             let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
             for mode in [VizMode::Bars, VizMode::Mirror, VizMode::Mono, VizMode::Wave] {
