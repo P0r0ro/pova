@@ -342,5 +342,5 @@ everything.
 
 ## License
 
-MIT. See [LICENSE](LICENSE), which also includes the notices for the parts
-ported from cava and ratatui-image.
+MIT, see [LICENSE](LICENSE). The parts ported from cava and ratatui-image keep
+their own MIT notices in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
