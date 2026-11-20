@@ -1,6 +1,6 @@
 [package]
 name = "pova"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 description = "btop-style YouTube Music player with a built-in cava visualizer"
 license = "MIT"

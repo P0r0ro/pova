@@ -1,0 +1,35 @@
+# Keys
+
+pova uses btop's idea of keys: one keystroke per thing, with the important
+letters highlighted in the borders. Press `?` inside pova for the full list,
+including any keys you've remapped.
+
+| Key | Does | Key | Does |
+|---|---|---|---|
+| `space` | play / pause | `n` `q` `l` `/` `b` | now playing, queue, lyrics, search, library |
+| `←` `→` | seek 5 s | `tab` / `shift+tab` | next / previous tab |
+| `H` `L` | seek 30 s | `1` `2` `3` | show / hide the three boxes |
+| `<` `>` or `P` `N` | previous / next track | `j` `k` `↑` `↓` `g` `G` | move around lists |
+| `+` `-` `m` | volume, mute | `enter` | play or open the selection |
+| `S` `R` | shuffle, repeat (off / all / one) | `a` / `A` | add to queue / play next |
+| `f` | like or unlike the current song | `r` | start a radio from the selection |
+| `v` | change visualizer mode | `d`, `J` `K`, `C` | queue: remove, move, clear |
+| `t` | theme picker (live preview) | `[` `]` | change search filter / library section |
+| `esc` | back, or the menu | `c` | jump to the playing track |
+| `Q` | quit | `F5` | reload the current list |
+
+**In the search box:** type, and suggestions appear underneath. `↑` `↓` pick
+one, `→` accepts the dimmed completion, `tab` changes the filter (Songs,
+Videos, Albums, Artists, Playlists), `enter` searches.
+
+**The Esc menu.** Like btop, pressing `esc` when there's nothing to go back
+from opens a menu with the pova logo drawn in block characters, in the logo's
+own violet-to-pink gradient. From it you pick a theme, change the visualizer
+mode, and turn autoplay and album art on and off. Your choices are saved.
+
+The mouse works too: click tabs, buttons, list rows and the progress bar, and
+scroll through lists.
+
+To remap keys, see [configuration.md](configuration.md).
+
+Back to the [README](../README.md).
