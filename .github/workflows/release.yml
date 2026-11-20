@@ -1,0 +1,56 @@
+name: Release binaries
+
+# Builds a Linux x86_64 binary and attaches it to the GitHub Release.
+# Runs on every pushed version tag, or by hand for an existing tag.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (for example v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  linux-x86_64:
+    # 22.04's older glibc keeps the binary runnable on more distros.
+    runs-on: ubuntu-22.04
+    env:
+      # Passed through env, never interpolated into scripts.
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Smoke test
+        run: ./target/release/pova --version
+
+      - name: Package
+        run: |
+          name="pova-${TAG}-x86_64-linux"
+          mkdir -p "$name"
+          cp target/release/pova README.md LICENSE THIRD_PARTY_NOTICES.md "$name/"
+          mkdir -p "$name/scripts" && cp scripts/import-cookie.sh "$name/scripts/"
+          tar czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          echo "ASSET=$name" >> "$GITHUB_ENV"
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --title "pova $TAG" --generate-notes
+          fi
+          gh release upload "$TAG" "$ASSET.tar.gz" "$ASSET.tar.gz.sha256" --clobber

@@ -21,6 +21,13 @@ audio* and nothing else. Your Discord notification sounds are not music, and
 pova knows that.
 
 <p align="center">
+  <a href="https://github.com/P0r0ro/pova/releases/download/v1.0.0/pova-launch.mp4">
+    <img src="assets/launch-video.jpg" alt="Watch the 40-second launch video, hosted by the pova cat" width="720">
+  </a><br>
+  <sub>The 40-second tour, hosted by the cat. Click to play.</sub>
+</p>
+
+<p align="center">
   <img src="assets/screenshot.png" alt="pova playing Ugly (Acoustic) by The Exies: mirror visualizer on the left, album art and the song on the right" width="900">
 </p>
 
@@ -38,9 +45,15 @@ sudo dnf install btop        # optional: ~40 themes for free
 sudo dnf install mpv-mpris   # optional: media keys and the Plasma media widget
 ```
 
-**2. pova itself** (needs a Rust toolchain from <https://rustup.rs>):
+**2. pova itself.** Grab the prebuilt binary from the
+[latest release](https://github.com/P0r0ro/pova/releases/latest), or build it.
 
 ```sh
+# prebuilt (x86_64 Linux)
+tar xzf pova-v1.0.0-x86_64-linux.tar.gz
+install -Dm755 pova-v1.0.0-x86_64-linux/pova ~/.local/bin/pova
+
+# or from source (needs a Rust toolchain from https://rustup.rs)
 git clone https://github.com/P0r0ro/pova
 cd pova
 cargo install --path .
