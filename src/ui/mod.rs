@@ -1,5 +1,6 @@
 //! Rendering: btop-style boxes and layout.
 
+mod banner;
 mod overlay;
 mod tabs;
 
@@ -536,7 +537,50 @@ mod tests {
                 .unwrap();
             }
             app.overlay = None;
+            // "No lyrics" view with the cat mascot (kitty protocol forced).
+            app.tab = Tab::Lyrics;
+            app.lyrics = crate::app::LyricsState::Missing;
+            let mut picker = ratatui_image::picker::Picker::halfblocks();
+            picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
+            let img = image::load_from_memory(include_bytes!("../../assets/mascot-sad-cat-tui.png")).unwrap();
+            app.cat_art = Some(ratatui_image::thread::ThreadProtocol::new(
+                unbounded_channel().0,
+                Some(picker.new_resize_protocol(img)),
+            ));
+            term.draw(|f| {
+                draw(f, &mut app);
+            })
+            .unwrap();
+            app.cat_art = None;
+            term.draw(|f| {
+                draw(f, &mut app);
+            })
+            .unwrap();
         }
+    }
+
+    #[test]
+    fn esc_menu_shows_logo_banner() {
+        let mut app = app();
+        app.overlay = Some(Overlay::Menu {
+            state: Default::default(),
+        });
+        let mut term = Terminal::new(TestBackend::new(150, 42)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut app);
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let screen: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(screen.contains("Autoplay") && screen.contains("Album art"));
+        // Large banner (scale 2): its frame uses the logo's violet at the left edge.
+        let violet = buf
+            .content()
+            .iter()
+            .any(|c| c.fg == ratatui::style::Color::Rgb(0x6b, 0x1f, 0xfc));
+        assert!(violet, "banner gradient missing");
+        // At scale 2 every logo pixel is a full block.
+        assert!(screen.matches('█').count() > 100);
     }
 
     #[test]

@@ -694,7 +694,7 @@ pub fn lyrics(f: &mut Frame, app: &mut App, area: Rect) {
             &t,
             vec![Line::from(format!("{} looking for lyrics…", spinner()))],
         ),
-        LyricsState::Missing => centered_msg(f, body, &t, vec![Line::from("no lyrics available for this track")]),
+        LyricsState::Missing => no_lyrics(f, app, body),
         LyricsState::Found {
             lyrics: Lyrics::Plain(text),
             ..
@@ -742,5 +742,40 @@ pub fn lyrics(f: &mut Frame, app: &mut App, area: Rect) {
                 body,
             );
         }
+    }
+}
+
+/// The sad pixel cat (the pova mascot) above "no lyrics".
+fn no_lyrics(f: &mut Frame, app: &mut App, body: Rect) {
+    let t = app.theme.clone();
+    let msg = "no lyrics available for this track";
+    // Cat image: up to 14 rows, leaving room for the message.
+    let img_h = body.height.saturating_sub(3).min(14);
+    let mut drew = false;
+    if img_h >= 4
+        && let Some(cat) = app.cat_art.as_mut()
+    {
+        let max = Rect { height: img_h, ..body };
+        if let Some(size) = cat.size_for(Resize::Scale(None), max.into()) {
+            let total_h = size.height + 2;
+            let y0 = body.y + body.height.saturating_sub(total_h) / 2;
+            let x0 = body.x + body.width.saturating_sub(size.width) / 2;
+            let r = Rect::new(x0, y0, size.width.min(body.width), size.height.min(img_h));
+            f.render_stateful_widget(StatefulImage::new().resize(Resize::Scale(None)), r, cat);
+            f.render_widget(
+                Paragraph::new(msg)
+                    .alignment(Alignment::Center)
+                    .style(Style::new().fg(t.inactive_fg)),
+                Rect {
+                    y: r.y + r.height + 1,
+                    height: 1,
+                    ..body
+                },
+            );
+            drew = true;
+        }
+    }
+    if !drew {
+        centered_msg(f, body, &t, vec![Line::from(msg)]);
     }
 }

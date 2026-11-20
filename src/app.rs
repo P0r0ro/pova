@@ -185,7 +185,27 @@ pub enum Overlay {
     },
 }
 
-pub const MENU_ITEMS: [&str; 5] = ["Themes", "Visualizer mode", "Help", "Close menu", "Quit"];
+/// Entries of the Esc menu (btop-style options).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuItem {
+    Themes,
+    VizMode,
+    Autoplay,
+    AlbumArt,
+    Help,
+    Quit,
+}
+
+impl MenuItem {
+    pub const ALL: [MenuItem; 6] = [
+        MenuItem::Themes,
+        MenuItem::VizMode,
+        MenuItem::Autoplay,
+        MenuItem::AlbumArt,
+        MenuItem::Help,
+        MenuItem::Quit,
+    ];
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum Hit {
@@ -285,6 +305,8 @@ pub struct App {
     /// Scroll position the synced view chose last frame.
     pub lyrics_auto: u16,
     pub art: Option<ThreadProtocol>,
+    /// Sad-cat mascot for tracks without lyrics.
+    pub cat_art: Option<ThreadProtocol>,
     pub art_key: Option<String>,
     pub art_loading: bool,
     pub picker: Option<Picker>,
@@ -334,6 +356,9 @@ impl App {
         picker: Option<Picker>,
         art: Option<ThreadProtocol>,
     ) -> App {
+        let mut cfg = cfg;
+        cfg.autoplay = state.autoplay.unwrap_or(cfg.autoplay);
+        cfg.album_art = state.album_art.unwrap_or(cfg.album_art);
         let theme_name = state.theme.clone().unwrap_or_else(|| cfg.theme.clone());
         let theme = theme::load_named(&paths.config_dir, &theme_name, cfg.theme_background);
         let volume = state.volume.unwrap_or(cfg.volume).min(100) as f64;
@@ -362,6 +387,7 @@ impl App {
             lyrics_scroll: None,
             lyrics_auto: 0,
             art,
+            cat_art: None,
             art_key: None,
             art_loading: false,
             picker,
@@ -423,6 +449,47 @@ impl App {
         self.queue.current_track()
     }
 
+    /// Label of a menu entry, including the current value of settings.
+    pub fn menu_label(&self, item: MenuItem) -> String {
+        let on_off = |b: bool| if b { "on" } else { "off" };
+        match item {
+            MenuItem::Themes => format!("Theme        ‹ {} ›", self.theme.name),
+            MenuItem::VizMode => format!("Visualizer   ‹ {} ›", self.viz_mode.label()),
+            MenuItem::Autoplay => format!("Autoplay     ‹ {} ›", on_off(self.cfg.autoplay)),
+            MenuItem::AlbumArt => format!("Album art    ‹ {} ›", on_off(self.cfg.album_art)),
+            MenuItem::Help => "Help".into(),
+            MenuItem::Quit => "Quit".into(),
+        }
+    }
+
+    fn activate_menu(&mut self, item: MenuItem) {
+        match item {
+            MenuItem::Themes => self.open_themes(),
+            MenuItem::Help => self.overlay = Some(Overlay::Help { scroll: 0 }),
+            MenuItem::Quit => self.quit = true,
+            MenuItem::VizMode => {
+                self.viz_mode = self.viz_mode.next();
+                self.save_state();
+            }
+            MenuItem::Autoplay => {
+                self.cfg.autoplay = !self.cfg.autoplay;
+                if self.cfg.autoplay {
+                    self.autoplay_requested = None;
+                    self.maybe_autoplay();
+                }
+                self.save_state();
+            }
+            MenuItem::AlbumArt => {
+                self.cfg.album_art = !self.cfg.album_art;
+                if self.cfg.album_art {
+                    self.art_key = None;
+                    self.request_art();
+                }
+                self.save_state();
+            }
+        }
+    }
+
     pub fn save_state(&self) {
         State {
             theme: Some(self.theme.name.clone()),
@@ -431,6 +498,8 @@ impl App {
             show_viz: Some(self.show_viz),
             show_player: Some(self.show_player),
             show_controls: Some(self.show_controls),
+            autoplay: Some(self.cfg.autoplay),
+            album_art: Some(self.cfg.album_art),
         }
         .save(&self.paths.state_file());
     }
@@ -623,19 +692,25 @@ impl App {
                 duration: track.duration,
             });
         }
-        // Art
-        if self.cfg.album_art && self.picker.is_some() {
-            let url = track.art_url();
-            if self.art_key.as_deref() != Some(&url) {
-                self.art_key = Some(url.clone());
-                self.art_loading = true;
-                if let Some(a) = self.art.as_mut() {
-                    a.empty_protocol();
-                }
-                let _ = self.tx.art.send(ArtReq { key: url.clone(), url });
-            }
-        }
+        self.request_art();
         self.maybe_autoplay();
+    }
+
+    /// Fetch album art for the current track (if enabled and not shown yet).
+    fn request_art(&mut self) {
+        let Some(track) = self.current() else { return };
+        if !self.cfg.album_art || self.picker.is_none() {
+            return;
+        }
+        let url = track.art_url();
+        if self.art_key.as_deref() != Some(&url) {
+            self.art_key = Some(url.clone());
+            self.art_loading = true;
+            if let Some(a) = self.art.as_mut() {
+                a.empty_protocol();
+            }
+            let _ = self.tx.art.send(ArtReq { key: url.clone(), url });
+        }
     }
 
     /// When the last track starts, fetch a radio to keep the music going.
@@ -1684,18 +1759,16 @@ impl App {
                 }
             }
             Overlay::Menu { state } => {
-                let len = MENU_ITEMS.len();
+                let len = MenuItem::ALL.len();
                 let cur = state.selected().unwrap_or(0);
+                let item = MenuItem::ALL[cur.min(len - 1)];
+                let is_setting = matches!(item, MenuItem::VizMode | MenuItem::Autoplay | MenuItem::AlbumArt);
                 match (k.code, action) {
+                    // Settings toggle in place (menu stays open, like btop's options).
+                    (KeyCode::Enter | KeyCode::Left | KeyCode::Right, _) if is_setting => self.activate_menu(item),
                     (KeyCode::Enter, _) | (_, Some(Action::Select)) => {
                         self.overlay = None;
-                        match cur {
-                            0 => self.open_themes(),
-                            1 => self.dispatch(Action::VizMode),
-                            2 => self.overlay = Some(Overlay::Help { scroll: 0 }),
-                            4 => self.quit = true,
-                            _ => {}
-                        }
+                        self.activate_menu(item);
                     }
                     (KeyCode::Esc, _) => self.overlay = None,
                     (_, Some(Action::Down)) => state.select(Some((cur + 1) % len)),
@@ -2004,6 +2077,7 @@ mod search_tests {
 #[cfg(test)]
 mod resolve_tests {
     use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
     struct Harness {
@@ -2015,7 +2089,8 @@ mod resolve_tests {
     fn harness() -> Harness {
         let (p, prx) = unbounded_channel();
         let (r, rrx) = unbounded_channel();
-        let tmp = std::env::temp_dir().join("pova-resolve-test");
+        let tmp = std::env::temp_dir().join(format!("pova-resolve-test-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
         let paths = Paths {
             config_dir: tmp.clone(),
             cache_dir: tmp.clone(),
@@ -2170,5 +2245,33 @@ mod resolve_tests {
         assert_eq!(ids, ["e"]);
         h.app.tick();
         assert!(drain(&mut h.resolve).is_empty(), "only once per selection");
+    }
+
+    #[test]
+    fn menu_settings_toggle_in_place_and_persist() {
+        let mut h = harness();
+        h.app.dispatch(Action::Menu); // no list to go back in -> opens the menu
+        assert!(matches!(h.app.overlay, Some(Overlay::Menu { .. })));
+        let autoplay = MenuItem::ALL.iter().position(|i| *i == MenuItem::Autoplay).unwrap();
+        if let Some(Overlay::Menu { state }) = h.app.overlay.as_mut() {
+            state.select(Some(autoplay));
+        }
+        let before = h.app.cfg.autoplay;
+        h.app
+            .on_terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert_eq!(h.app.cfg.autoplay, !before);
+        assert!(
+            matches!(h.app.overlay, Some(Overlay::Menu { .. })),
+            "menu stays open for settings"
+        );
+        let saved = State::load(&h.app.paths.state_file());
+        assert_eq!(saved.autoplay, Some(!before));
+        // Themes entry opens the theme picker.
+        if let Some(Overlay::Menu { state }) = h.app.overlay.as_mut() {
+            state.select(Some(0));
+        }
+        h.app
+            .on_terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert!(matches!(h.app.overlay, Some(Overlay::Themes { .. })));
     }
 }

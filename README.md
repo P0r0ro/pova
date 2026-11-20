@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="pova" width="560">
+</p>
+
 # pova
 
 A btop-style YouTube Music player for the terminal, with a built-in
@@ -91,6 +95,13 @@ Press `?` in pova to see all bindings, including your overrides.
 While typing in the search box, `tab` changes the filter, `enter` searches, and
 `esc` or `↓` returns to the results.
 
+### Esc menu
+
+Like btop, `esc` (when there's nothing to go back from) opens a menu with the
+pova logo drawn in the terminal. From it you can pick a theme, change the
+visualizer mode, and turn autoplay and album art on or off. Press `enter` or
+`←`/`→` to change a setting; settings are saved between sessions.
+
 ## Configuration
 
 `~/.config/pova/config.toml` is created on first run:
@@ -148,6 +159,16 @@ pw-record (mpv's node) ─► capture thread ─(lock-free rtrb ring)─► DSP 
 
 Logs go to `~/.cache/pova/pova.log` and never to the TUI. Use
 `pova --log-level debug` for more detail.
+
+## Mascot
+
+<p align="center">
+  <img src="assets/mascot-sad-cat.png" alt="pova's sad pixel cat" width="360">
+</p>
+
+When a track has no lyrics, pova's mascot (a sad pixel cat next to a muted
+music note) shows up in the Lyrics tab. The image is built into the binary
+(`assets/mascot-sad-cat-tui.png` is the cropped terminal version).
 
 ## Development
 

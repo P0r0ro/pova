@@ -62,8 +62,8 @@ pub struct MpvConfig {
     pub socket: PathBuf,
     pub volume: u8,
     pub extra_args: Vec<String>,
-    /// Receives mpv's PID so the visualizer can find its PipeWire stream.
-    pub pid_out: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// `--audio-client-name`, unique per pova instance (see [`audio_client_name`]).
+    pub client_name: String,
 }
 
 const OBSERVED: &[&str] = &[
@@ -86,7 +86,7 @@ fn spawn_mpv(cfg: &MpvConfig) -> anyhow::Result<Child> {
         .arg("--force-window=no")
         .arg("--audio-display=no")
         .arg(format!("--input-ipc-server={}", cfg.socket.display()))
-        .arg("--audio-client-name=pova")
+        .arg(format!("--audio-client-name={}", cfg.client_name))
         .arg(format!("--volume={}", cfg.volume))
         .arg("--volume-max=100")
         .arg("--prefetch-playlist=yes")
@@ -114,6 +114,12 @@ fn spawn_mpv(cfg: &MpvConfig) -> anyhow::Result<Child> {
     cmd.spawn().context("failed to start mpv (is it installed?)")
 }
 
+/// PipeWire client name of this instance's mpv: `pova-<pid>`. Lets the
+/// visualizer find *our* stream even when several pova sessions run.
+pub fn audio_client_name() -> String {
+    format!("pova-{}", std::process::id())
+}
+
 pub fn which(bin: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path).map(|d| d.join(bin)).find(|p| p.is_file())
@@ -135,9 +141,6 @@ async fn run_inner(
     events: &UnboundedSender<PlayerEvent>,
 ) -> anyhow::Result<()> {
     let mut child = spawn_mpv(cfg)?;
-    if let Some(pid) = child.id() {
-        cfg.pid_out.store(pid, std::sync::atomic::Ordering::Relaxed);
-    }
 
     // Wait for the IPC socket to appear.
     let mut stream = None;

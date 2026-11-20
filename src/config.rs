@@ -183,6 +183,8 @@ pub struct State {
     pub show_viz: Option<bool>,
     pub show_player: Option<bool>,
     pub show_controls: Option<bool>,
+    pub autoplay: Option<bool>,
+    pub album_art: Option<bool>,
 }
 
 impl State {

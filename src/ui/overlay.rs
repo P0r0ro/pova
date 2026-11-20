@@ -2,12 +2,13 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Cell, Clear, Row, Table};
+use ratatui::widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table};
 
-use crate::app::{App, MENU_ITEMS, Overlay};
+use crate::app::{App, MenuItem, Overlay};
 use crate::keymap::Action;
+use crate::ui::banner;
 
 fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width);
@@ -101,20 +102,64 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             f.render_stateful_widget(table, inner, state);
         }
         Overlay::Menu { state } => {
-            let r = centered(area, 30, MENU_ITEMS.len() as u16 + 4);
-            f.render_widget(Clear, r);
-            let block = frame(&t, "pova");
-            let inner = block.inner(r);
-            f.render_widget(block, r);
-            let rows: Vec<Row> = MENU_ITEMS.iter().map(|m| Row::new(vec![Cell::from(*m)])).collect();
-            let table = Table::new(rows, [Constraint::Fill(1)]).row_highlight_style(sel);
-            let inner = Rect {
-                x: inner.x + 1,
-                y: inner.y + 1,
-                width: inner.width.saturating_sub(2),
-                height: inner.height.saturating_sub(1),
-            };
-            f.render_stateful_widget(table, inner, state);
+            let state = *state;
+            draw_menu(f, app, area, state.selected().unwrap_or(0));
         }
     }
+}
+
+/// btop-style Esc menu: the pova logo banner above the options.
+fn draw_menu(f: &mut Frame, app: &mut App, area: Rect, selected: usize) {
+    let t = app.theme.clone();
+    let items: Vec<String> = MenuItem::ALL.iter().map(|i| app.menu_label(*i)).collect();
+    let items_w = items
+        .iter()
+        .map(|s| Span::raw(s.as_str()).width() as u16)
+        .max()
+        .unwrap_or(10)
+        + 6;
+    let items_h = items.len() as u16;
+    // Largest banner that fits, or none on tiny terminals.
+    let scale = [2usize, 1]
+        .into_iter()
+        .find(|&s| banner::width(s) + 4 <= area.width && (s as u16 * 4 + 2) + items_h + 6 <= area.height);
+    let logo = scale.map(banner::lines).unwrap_or_default();
+    let logo_w = scale.map(banner::width).unwrap_or(0);
+    let panel_w = logo_w.max(items_w) + 4;
+    let panel_h = logo.len() as u16 + items_h + 5;
+    let r = centered(area, panel_w, panel_h);
+    f.render_widget(Clear, r);
+    f.render_widget(Block::new().style(Style::new().bg(t.main_bg)), r);
+
+    let mut y = r.y + 1;
+    if !logo.is_empty() {
+        let x = r.x + (r.width.saturating_sub(logo_w)) / 2;
+        for line in logo {
+            f.render_widget(Paragraph::new(line), Rect::new(x, y, logo_w.min(r.width), 1));
+            y += 1;
+        }
+    }
+    y += 1;
+    let accent = banner::gradient(0.5);
+    for (i, label) in items.iter().enumerate() {
+        let row = Rect::new(r.x + (r.width.saturating_sub(items_w)) / 2, y, items_w.min(r.width), 1);
+        let style = if i == selected {
+            Style::new()
+                .bg(accent)
+                .fg(Color::Rgb(0xff, 0xff, 0xff))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(t.main_fg)
+        };
+        // One left-aligned column so the ‹ value › parts line up.
+        f.render_widget(Paragraph::new(format!("   {label}")).style(style), row);
+        y += 1;
+    }
+    let hint = "↑↓ select · enter/←→ change · esc close";
+    f.render_widget(
+        Paragraph::new(hint)
+            .alignment(Alignment::Center)
+            .style(Style::new().fg(t.inactive_fg)),
+        Rect::new(r.x, y + 1, r.width, 1),
+    );
 }

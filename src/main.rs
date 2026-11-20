@@ -182,6 +182,27 @@ fn make_picker(protocol: &str) -> Picker {
     picker
 }
 
+type Resized = Result<ratatui_image::thread::ResizeResponse, ratatui_image::errors::Errors>;
+
+/// Thread that resizes/encodes images for one `ThreadProtocol`.
+fn spawn_resize_worker(
+    name: &str,
+) -> std::io::Result<(
+    tokio::sync::mpsc::UnboundedSender<ResizeRequest>,
+    tokio::sync::mpsc::UnboundedReceiver<Resized>,
+)> {
+    let (req_tx, mut req_rx) = unbounded_channel::<ResizeRequest>();
+    let (done_tx, done_rx) = unbounded_channel();
+    std::thread::Builder::new().name(name.into()).spawn(move || {
+        while let Some(req) = req_rx.blocking_recv() {
+            if done_tx.send(req.resize_encode()).is_err() {
+                break;
+            }
+        }
+    })?;
+    Ok((req_tx, done_rx))
+}
+
 /// Discard pending terminal input (late query responses) for up to `quiet`.
 fn drain_stdin(quiet: Duration) {
     while let Ok(true) = crossterm::event::poll(quiet) {
@@ -195,7 +216,8 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
     let (keymap, key_warnings) = Keymap::new(&cfg.keys);
 
     // ── visualizer threads ──
-    let mut viz = viz::spawn(&cfg.viz);
+    let client_name = mpv::audio_client_name();
+    let mut viz = viz::spawn(&cfg.viz, client_name.clone());
 
     // ── actors ──
     let (player_tx, player_cmd_rx) = unbounded_channel();
@@ -204,7 +226,7 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
         socket: paths.runtime_dir.join(format!("pova-{}.sock", std::process::id())),
         volume: state.volume.unwrap_or(cfg.volume).min(100),
         extra_args: cfg.mpv_args.clone(),
-        pid_out: viz.mpv_pid.clone(),
+        client_name: client_name.clone(),
     };
     let player_task = tokio::spawn(mpv::run(mpv_cfg, player_cmd_rx, player_ev_tx));
 
@@ -232,26 +254,27 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
         default_hook(info);
     }));
 
-    let picker = if cfg.album_art {
-        Some(make_picker(&cfg.image_protocol))
-    } else {
+    // Prepared even when art is off, so it can be switched on from the Esc
+    // menu (cheap); `--no-art` skips images entirely.
+    let picker = if cli.no_art {
         None
+    } else {
+        Some(make_picker(&cfg.image_protocol))
     };
     // Terminals that answer the graphics query late (e.g. inside tmux) would
     // otherwise have the replies glued to the user's first key presses.
     drain_stdin(Duration::from_millis(150));
 
-    // Image resize/encode runs off the UI thread.
-    let (resize_tx, mut resize_req_rx) = unbounded_channel::<ResizeRequest>();
-    let (resized_tx, mut resized_rx) = unbounded_channel();
-    std::thread::Builder::new().name("art-resize".into()).spawn(move || {
-        while let Some(req) = resize_req_rx.blocking_recv() {
-            if resized_tx.send(req.resize_encode()).is_err() {
-                break;
-            }
-        }
-    })?;
+    // Image resize/encode runs off the UI thread; one worker per image slot so
+    // their responses (ids) can't get mixed up.
+    let (resize_tx, mut resized_rx) = spawn_resize_worker("art-resize")?;
     let art_proto = picker.as_ref().map(|_| ThreadProtocol::new(resize_tx, None));
+    // The sad-cat mascot shown when a track has no lyrics (embedded asset).
+    let (cat_tx, mut cat_resized_rx) = spawn_resize_worker("cat-resize")?;
+    let cat_proto = picker.as_ref().and_then(|p| {
+        let img = image::load_from_memory(include_bytes!("../assets/mascot-sad-cat-tui.png")).ok()?;
+        Some(ThreadProtocol::new(cat_tx, Some(p.new_resize_protocol(img))))
+    });
 
     let channels = Channels {
         player: player_tx.clone(),
@@ -261,6 +284,7 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
         resolve: resolve_tx,
     };
     let mut app = App::new(cfg, paths, state, keymap, channels, picker, art_proto);
+    app.cat_art = cat_proto;
     for w in key_warnings {
         app.flash(w, true);
     }
@@ -301,6 +325,12 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
                             }
                         }
                         Err(e) => tracing::warn!("art encode: {e}"),
+                    }
+                    app.dirty = true;
+                }
+                Some(done) = cat_resized_rx.recv() => {
+                    if let (Ok(resp), Some(c)) = (done, app.cat_art.as_mut()) {
+                        c.update_resized_protocol(resp);
                     }
                     app.dirty = true;
                 }

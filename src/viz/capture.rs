@@ -5,7 +5,7 @@
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -26,47 +26,36 @@ enum Target {
 pub struct CaptureConfig {
     pub source: VizSource,
     pub rate: u32,
-    /// PID of our mpv, used to pick *our* stream when several exist (0 = unknown).
-    pub mpv_pid: Arc<AtomicU32>,
+    /// mpv's `--audio-client-name`, unique per pova instance (`pova-<pid>`).
+    /// mpv's PipeWire stream carries no process id, so the name is the only
+    /// reliable way to capture *this* instance's audio and not another's.
+    pub client_name: String,
 }
 
 /// Look up the serial of mpv's playback stream in the PipeWire graph.
-fn find_mpv_node(pid: u32) -> Option<u64> {
+fn find_mpv_node(client_name: &str) -> Option<u64> {
     let out = Command::new("pw-dump").stderr(Stdio::null()).output().ok()?;
     let objects: Vec<Value> = serde_json::from_slice(&out.stdout).ok()?;
-    // Nodes without a process id are accepted only if nothing matches exactly;
-    // nodes owned by another pova instance are never picked.
-    let mut fallback = None;
-    for obj in &objects {
-        let Some(props) = obj.pointer("/info/props") else {
-            continue;
-        };
+    pick_node(&objects, client_name)
+}
+
+/// The playback stream named exactly `client_name`.
+fn pick_node(objects: &[Value], client_name: &str) -> Option<u64> {
+    objects.iter().find_map(|obj| {
+        let props = obj.pointer("/info/props")?;
         let s = |k: &str| props.get(k).and_then(Value::as_str);
-        if s("media.class") != Some("Stream/Output/Audio") {
-            continue;
+        let ours = s("node.name") == Some(client_name) || s("application.name") == Some(client_name);
+        if s("media.class") != Some("Stream/Output/Audio") || !ours {
+            return None;
         }
-        if s("application.name") != Some("pova") && s("node.name") != Some("pova") {
-            continue;
-        }
-        let Some(serial) = props.get("object.serial").and_then(Value::as_u64) else {
-            continue;
-        };
-        let node_pid = props
-            .get("application.process.id")
-            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())));
-        match node_pid {
-            Some(p) if pid != 0 && p == pid as u64 => return Some(serial),
-            Some(_) if pid != 0 => {}
-            _ => fallback = fallback.or(Some(serial)),
-        }
-    }
-    fallback
+        props.get("object.serial").and_then(Value::as_u64)
+    })
 }
 
 fn find_target(cfg: &CaptureConfig) -> Option<Target> {
     match cfg.source {
         VizSource::System => Some(Target::DefaultSink),
-        VizSource::Mpv => find_mpv_node(cfg.mpv_pid.load(Ordering::Relaxed)).map(Target::Node),
+        VizSource::Mpv => find_mpv_node(&cfg.client_name).map(Target::Node),
     }
 }
 
@@ -164,5 +153,26 @@ pub fn run(cfg: CaptureConfig, producer: rtrb::Producer<f32>, quit: Arc<AtomicBo
         let _ = child.kill();
         let _ = child.wait();
         producer = Some(reader.join().expect("reader thread"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn picks_only_this_instances_stream() {
+        let graph: Vec<Value> = serde_json::from_str(
+            r#"[
+            {"info":{"props":{"media.class":"Stream/Output/Audio","node.name":"pova-111","object.serial":10}}},
+            {"info":{"props":{"media.class":"Stream/Output/Audio","node.name":"pova-222","object.serial":20}}},
+            {"info":{"props":{"media.class":"Stream/Input/Audio","node.name":"pova-222","object.serial":30}}},
+            {"info":null}
+        ]"#,
+        )
+        .unwrap();
+        assert_eq!(pick_node(&graph, "pova-222"), Some(20));
+        assert_eq!(pick_node(&graph, "pova-111"), Some(10));
+        assert_eq!(pick_node(&graph, "pova-333"), None);
     }
 }

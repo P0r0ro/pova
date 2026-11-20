@@ -12,7 +12,7 @@ pub mod core;
 pub mod render;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -36,7 +36,6 @@ pub struct VizHandle {
     pub frames: watch::Receiver<Frame>,
     /// Bars per channel the UI wants; the DSP thread rebuilds when it changes.
     pub want_bars: Arc<AtomicUsize>,
-    pub mpv_pid: Arc<AtomicU32>,
     quit: Arc<AtomicBool>,
     threads: Vec<thread::JoinHandle<()>>,
 }
@@ -56,19 +55,18 @@ impl VizHandle {
 
 const WAVE_LEN: usize = 2048;
 
-pub fn spawn(cfg: &VizConfig) -> VizHandle {
+pub fn spawn(cfg: &VizConfig, client_name: String) -> VizHandle {
     let rate = cfg.sample_rate;
     // ~0.5 s of stereo audio.
     let (producer, consumer) = rtrb::RingBuffer::<f32>::new(rate as usize);
     let quit = Arc::new(AtomicBool::new(false));
-    let mpv_pid = Arc::new(AtomicU32::new(0));
     let want_bars = Arc::new(AtomicUsize::new(32));
     let (tx, rx) = watch::channel(Frame::default());
 
     let capture_cfg = capture::CaptureConfig {
         source: cfg.source,
         rate,
-        mpv_pid: mpv_pid.clone(),
+        client_name,
     };
     let q = quit.clone();
     let capture = thread::Builder::new()
@@ -87,7 +85,6 @@ pub fn spawn(cfg: &VizConfig) -> VizHandle {
     VizHandle {
         frames: rx,
         want_bars,
-        mpv_pid,
         quit,
         threads: vec![capture, dsp],
     }
