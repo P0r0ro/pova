@@ -1,6 +1,7 @@
 //! Rendering: btop-style boxes and layout.
 
 mod banner;
+mod kitty_fix;
 mod overlay;
 mod tabs;
 
@@ -145,7 +146,14 @@ pub fn draw(f: &mut Frame, app: &mut App) -> usize {
             },
         );
     }
-    overlay::draw(f, app);
+    if app.overlay.is_some() {
+        // Overlays cut through kitty image rows; re-anchor the cells beside them.
+        let anchors = kitty_fix::Anchors::capture(f.buffer_mut());
+        overlay::draw(f, app);
+        if !anchors.is_empty() {
+            anchors.repair(f.buffer_mut());
+        }
+    }
     want_bars
 }
 
@@ -557,6 +565,60 @@ mod tests {
             })
             .unwrap();
         }
+    }
+
+    /// kitty draws a placeholder cell only if it carries its position or its
+    /// left neighbour is part of the same image. With the Esc menu open over
+    /// the album art, every image run must therefore start with a full anchor.
+    #[test]
+    fn overlay_keeps_kitty_art_beside_it() {
+        use ratatui_image::picker::{Picker, ProtocolType};
+        use ratatui_image::thread::ThreadProtocol;
+        const PH: char = '\u{10EEEE}';
+
+        let mut picker = Picker::halfblocks();
+        picker.set_protocol_type(ProtocolType::Kitty);
+        let (tx, mut rx) = unbounded_channel();
+        let mut app = app();
+        app.tab = Tab::NowPlaying;
+        app.picker = Some(picker.clone());
+        let mut proto = ThreadProtocol::new(tx, None);
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(600, 600, image::Rgb([30, 140, 220])));
+        proto.replace_protocol(picker.new_resize_protocol(img));
+        app.art = Some(proto);
+        app.art_loading = false;
+        // Same shape as the bug report: wide terminal, art top-right, menu centred.
+        let mut term = Terminal::new(TestBackend::new(200, 50)).unwrap();
+        term.draw(|f| {
+            draw(f, &mut app);
+        })
+        .unwrap();
+        let done = rx.try_recv().unwrap().resize_encode().unwrap();
+        app.art.as_mut().unwrap().update_resized_protocol(done);
+        app.overlay = Some(Overlay::Menu {
+            state: Default::default(),
+        });
+        term.draw(|f| {
+            draw(f, &mut app);
+        })
+        .unwrap();
+
+        let buf = term.backend().buffer();
+        let mut runs = 0;
+        for y in 0..buf.area.height {
+            let mut prev = false;
+            for x in 0..buf.area.width {
+                let sym = buf[(x, y)].symbol();
+                let is_img = sym.contains(PH);
+                if is_img && !prev {
+                    runs += 1;
+                    let marks = sym.split_once(PH).unwrap().1.chars().count();
+                    assert!(marks >= 3, "image run at ({x},{y}) has no anchor: {sym:?}");
+                }
+                prev = is_img;
+            }
+        }
+        assert!(runs > 0, "art not drawn");
     }
 
     #[test]
