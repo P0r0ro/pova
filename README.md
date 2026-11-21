@@ -49,7 +49,11 @@ sudo dnf install mpv-mpris   # optional: media keys and the Plasma media widget
 [latest release](https://github.com/P0r0ro/pova/releases/latest), or build it.
 
 ```sh
-# prebuilt (x86_64 Linux)
+# AppImage (x86_64 Linux): download, make executable, run it from a terminal
+chmod +x pova-v1.0.0-x86_64.AppImage
+./pova-v1.0.0-x86_64.AppImage
+
+# prebuilt binary (x86_64 Linux)
 tar xzf pova-v1.0.0-x86_64-linux.tar.gz
 install -Dm755 pova-v1.0.0-x86_64-linux/pova ~/.local/bin/pova
 

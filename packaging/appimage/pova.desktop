@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=pova
+GenericName=YouTube Music player
+Comment=YouTube Music in the terminal, with a cava visualizer and btop themes
+Exec=pova
+Icon=pova
+Terminal=true
+Categories=AudioVideo;Audio;Player;ConsoleOnly;
+Keywords=music;youtube;player;visualizer;lyrics;terminal;
