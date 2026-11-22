@@ -119,6 +119,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # A release created by hand right after tagging can take a moment to
+          # show up; wait for it before falling back to creating one.
+          for i in 1 2 3 4 5 6; do
+            gh release view "$TAG" > /dev/null 2>&1 && break
+            sleep 10
+          done
           if ! gh release view "$TAG" > /dev/null 2>&1; then
             gh release create "$TAG" --title "pova $TAG" --generate-notes
           fi
