@@ -1,6 +1,6 @@
 [package]
 name = "pova"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 description = "btop-style YouTube Music player with a built-in cava visualizer"
 license = "MIT"
@@ -31,6 +31,55 @@ tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 ytmapi-rs = { version = "0.3.4", default-features = false, features = ["rustls", "simplified-queries"] }
+
+# ── Linux packages (built in CI by .github/workflows/release.yml) ──
+# Debian/Ubuntu: cargo deb
+[package.metadata.deb]
+maintainer = "P0r0ro <250746769+P0r0ro@users.noreply.github.com>"
+copyright = "2026, P0r0ro"
+license-file = ["LICENSE", "0"]
+section = "sound"
+priority = "optional"
+extended-description = """\
+pova plays YouTube Music in the terminal with a btop-style layout, a visualizer \
+ported from cava, synced lyrics, album art, a queue, likes and every btop theme."""
+# mpv plays, yt-dlp resolves streams, pipewire-bin provides pw-record/pw-dump
+# for the visualizer. nodejs/deno lets yt-dlp solve YouTube's JS challenge;
+# python3 is used by pova-import-cookie.
+depends = "$auto, mpv, yt-dlp, pipewire-bin"
+recommends = "nodejs | deno, python3, mpv-mpris, btop"
+assets = [
+    ["target/release/pova", "usr/bin/", "755"],
+    ["scripts/import-cookie.sh", "usr/bin/pova-import-cookie", "755"],
+    ["packaging/appimage/pova.desktop", "usr/share/applications/", "644"],
+    ["packaging/appimage/pova.png", "usr/share/icons/hicolor/512x512/apps/", "644"],
+    ["README.md", "usr/share/doc/pova/", "644"],
+    ["THIRD_PARTY_NOTICES.md", "usr/share/doc/pova/", "644"],
+]
+
+# Fedora/RHEL: cargo generate-rpm
+[package.metadata.generate-rpm]
+summary = "YouTube Music in the terminal, with a cava visualizer and btop themes"
+assets = [
+    { source = "target/release/pova", dest = "/usr/bin/pova", mode = "755" },
+    { source = "scripts/import-cookie.sh", dest = "/usr/bin/pova-import-cookie", mode = "755" },
+    { source = "packaging/appimage/pova.desktop", dest = "/usr/share/applications/pova.desktop", mode = "644" },
+    { source = "packaging/appimage/pova.png", dest = "/usr/share/icons/hicolor/512x512/apps/pova.png", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/pova/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/pova/LICENSE", mode = "644" },
+    { source = "THIRD_PARTY_NOTICES.md", dest = "/usr/share/licenses/pova/THIRD_PARTY_NOTICES.md", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+mpv = "*"
+yt-dlp = "*"
+pipewire-utils = "*"
+
+[package.metadata.generate-rpm.recommends]
+nodejs = "*"
+python3 = "*"
+mpv-mpris = "*"
+btop = "*"
 
 [profile.release]
 lto = "thin"

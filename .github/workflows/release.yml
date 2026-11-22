@@ -1,6 +1,7 @@
 name: Release binaries
 
-# Builds a Linux x86_64 binary and an AppImage and attaches them to the GitHub Release.
+# Builds a Linux x86_64 binary, an AppImage, a .deb and an .rpm, tests the packages in
+# clean Fedora and Ubuntu containers, and attaches everything to the GitHub Release.
 # Runs on every pushed version tag, or by hand for an existing tag.
 on:
   push:
@@ -8,8 +9,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build (for example v1.0.0)"
+        description: "Existing tag to build (for example v1.0.0), or a branch for a rehearsal"
         required: true
+      publish:
+        description: "Upload to the release (off = build and test only)"
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -37,6 +42,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
 
       - name: Build
         run: cargo build --release --locked
@@ -75,11 +84,43 @@ jobs:
           sha256sum "$appimage" > "$appimage.sha256"
           echo "APPIMAGE=$appimage" >> "$GITHUB_ENV"
 
+      - name: .deb and .rpm
+        run: |
+          cargo deb --no-build --no-strip
+          cargo generate-rpm
+          deb=$(ls target/debian/*.deb) && rpm=$(ls target/generate-rpm/*.rpm)
+          cp "$deb" "$rpm" .
+          deb=$(basename "$deb") && rpm=$(basename "$rpm")
+          sha256sum "$deb" > "$deb.sha256" && sha256sum "$rpm" > "$rpm.sha256"
+          echo "DEB=$deb" >> "$GITHUB_ENV" && echo "RPM=$rpm" >> "$GITHUB_ENV"
+
+      # Install each package on a clean system: proves its dependencies resolve
+      # from the distro's own repositories and that everything lands in place.
+      - name: Test the .rpm on Fedora
+        run: |
+          docker run --rm -v "$PWD:/w:ro" -e RPM fedora:latest bash -euc '
+            dnf install -y -q "/w/$RPM"
+            pova --version
+            for c in mpv yt-dlp pw-record pw-dump pova-import-cookie; do command -v "$c"; done
+            test -f /usr/share/applications/pova.desktop'
+
+      - name: Test the .deb on Ubuntu
+        run: |
+          docker run --rm -v "$PWD:/w:ro" -e DEB ubuntu:24.04 bash -euc '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq
+            apt-get install -y -qq "/w/$DEB" > /dev/null
+            pova --version
+            for c in mpv yt-dlp pw-record pw-dump pova-import-cookie; do command -v "$c"; done
+            test -f /usr/share/applications/pova.desktop'
+
       - name: Upload to the release
+        if: github.event_name == 'push' || inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if ! gh release view "$TAG" > /dev/null 2>&1; then
             gh release create "$TAG" --title "pova $TAG" --generate-notes
           fi
-          gh release upload "$TAG" "$ASSET.tar.gz" "$ASSET.tar.gz.sha256" "$APPIMAGE" "$APPIMAGE.sha256" --clobber
+          gh release upload "$TAG" "$ASSET.tar.gz" "$ASSET.tar.gz.sha256" "$APPIMAGE" "$APPIMAGE.sha256" \
+            "$DEB" "$DEB.sha256" "$RPM" "$RPM.sha256" --clobber

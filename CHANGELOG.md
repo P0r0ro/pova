@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.1 — packages
+
+- **.deb and .rpm packages.** `sudo dnf install ./pova-*.rpm` or
+  `sudo apt install ./pova_*.deb` installs pova with mpv, yt-dlp and the
+  PipeWire tools from your distro's repositories, and adds it to the app menu.
+- **AppImage** for every release.
+- The sign-in helper is installed as the `pova-import-cookie` command.
+- Every package is test-installed on clean Fedora and Ubuntu systems before
+  it's published.
+
 ## 1.0.0 — first release
 
 pova plays YouTube Music in your terminal, looks like btop, and has a real

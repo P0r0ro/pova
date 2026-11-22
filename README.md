@@ -36,6 +36,19 @@ pova knows that.
 pova runs on Linux with PipeWire. It was built on Fedora KDE with kitty, and
 kitty shows real album art (other terminals get a blocky version).
 
+**The easy way: a package.** It installs pova together with everything it
+needs (mpv, yt-dlp, PipeWire tools) from your distro's own repositories, and
+adds pova to your app menu. Grab it from the
+[latest release](https://github.com/P0r0ro/pova/releases/latest):
+
+```sh
+sudo dnf install ./pova-1.0.1-1.x86_64.rpm     # Fedora
+sudo apt install ./pova_1.0.1-1_amd64.deb      # Debian, Ubuntu
+```
+
+Otherwise, install the helpers yourself and pick an AppImage, a prebuilt
+binary, or build from source:
+
 **1. The helpers pova drives:**
 
 ```sh
@@ -50,12 +63,12 @@ sudo dnf install mpv-mpris   # optional: media keys and the Plasma media widget
 
 ```sh
 # AppImage (x86_64 Linux): download, make executable, run it from a terminal
-chmod +x pova-v1.0.0-x86_64.AppImage
-./pova-v1.0.0-x86_64.AppImage
+chmod +x pova-v1.0.1-x86_64.AppImage
+./pova-v1.0.1-x86_64.AppImage
 
 # prebuilt binary (x86_64 Linux)
-tar xzf pova-v1.0.0-x86_64-linux.tar.gz
-install -Dm755 pova-v1.0.0-x86_64-linux/pova ~/.local/bin/pova
+tar xzf pova-v1.0.1-x86_64-linux.tar.gz
+install -Dm755 pova-v1.0.1-x86_64-linux/pova ~/.local/bin/pova
 
 # or from source (needs a Rust toolchain from https://rustup.rs)
 git clone https://github.com/P0r0ro/pova
@@ -130,7 +143,9 @@ see your library, let pova borrow the YouTube Music login your browser already
 has. If you're signed in to <https://music.youtube.com>:
 
 ```sh
-./scripts/import-cookie.sh chrome     # or firefox, chromium, brave, edge, vivaldi, opera
+pova-import-cookie chrome              # installed with the .deb / .rpm
+./scripts/import-cookie.sh chrome      # from a source checkout
+# works with firefox, chromium, brave, edge, vivaldi, opera too
 ```
 
 Restart pova and the player box says **● signed in**. The cookie is saved in
