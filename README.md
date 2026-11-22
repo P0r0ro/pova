@@ -36,47 +36,89 @@ pova knows that.
 pova runs on Linux with PipeWire. It was built on Fedora KDE with kitty, and
 kitty shows real album art (other terminals get a blocky version).
 
-**The easy way: a package.** It installs pova together with everything it
-needs (mpv, yt-dlp, PipeWire tools) from your distro's own repositories, and
-adds pova to your app menu. Grab it from the
-[latest release](https://github.com/P0r0ro/pova/releases/latest):
+| Method | Best for | Installs mpv, yt-dlp and the PipeWire tools for you |
+|---|---|---|
+| [`.rpm` package](#fedora-rpm) | Fedora and other dnf-based distros | yes |
+| [`.deb` package](#debian-and-ubuntu-deb) | Debian, Ubuntu, Linux Mint, Pop!_OS | yes |
+| [AppImage](#appimage) | any distro, nothing to install | no |
+| [Prebuilt binary](#prebuilt-binary) | any distro, a single file in your `PATH` | no |
+| [From source](#from-source) | Rust users, other CPU architectures | no |
+
+Every file is on the [latest release](https://github.com/P0r0ro/pova/releases/latest)
+page, with a `.sha256` checksum next to it. The commands below use version 1.0.1.
+
+### Fedora (.rpm)
+
+`dnf` installs pova and pulls in mpv, yt-dlp and pipewire-utils from Fedora's
+own repositories. pova also shows up in your app menu.
 
 ```sh
-sudo dnf install ./pova-1.0.1-1.x86_64.rpm     # Fedora
-sudo apt install ./pova_1.0.1-1_amd64.deb      # Debian, Ubuntu
+sudo dnf install https://github.com/P0r0ro/pova/releases/download/v1.0.1/pova-1.0.1-1.x86_64.rpm
 ```
 
-Otherwise, install the helpers yourself and pick an AppImage, a prebuilt
-binary, or build from source:
+### Debian and Ubuntu (.deb)
 
-**1. The helpers pova drives:**
+`apt` installs pova and pulls in mpv, yt-dlp and pipewire-bin. pova also shows
+up in your app menu.
 
 ```sh
-# Fedora
-sudo dnf install mpv yt-dlp pipewire-utils nodejs
-sudo dnf install btop        # optional: ~40 themes for free
-sudo dnf install mpv-mpris   # optional: media keys and the Plasma media widget
+curl -LO https://github.com/P0r0ro/pova/releases/download/v1.0.1/pova_1.0.1-1_amd64.deb
+sudo apt install ./pova_1.0.1-1_amd64.deb
 ```
 
-**2. pova itself.** Grab the prebuilt binary from the
-[latest release](https://github.com/P0r0ro/pova/releases/latest), or build it.
+On older releases such as Ubuntu 22.04, the distro's yt-dlp is often too old
+for YouTube. If songs won't start, get a current one with `pipx install yt-dlp`.
+
+### AppImage
+
+One file that runs on any distro. You install pova's helpers yourself
+([see below](#the-helpers-pova-needs)).
 
 ```sh
-# AppImage (x86_64 Linux): download, make executable, run it from a terminal
+curl -LO https://github.com/P0r0ro/pova/releases/download/v1.0.1/pova-v1.0.1-x86_64.AppImage
 chmod +x pova-v1.0.1-x86_64.AppImage
 ./pova-v1.0.1-x86_64.AppImage
-
-# prebuilt binary (x86_64 Linux)
-tar xzf pova-v1.0.1-x86_64-linux.tar.gz
-install -Dm755 pova-v1.0.1-x86_64-linux/pova ~/.local/bin/pova
-
-# or from source (needs a Rust toolchain from https://rustup.rs)
-git clone https://github.com/P0r0ro/pova
-cd pova
-cargo install --path .
 ```
 
-**3. Play something:**
+### Prebuilt binary
+
+A plain binary plus the sign-in helper. You install pova's helpers yourself
+([see below](#the-helpers-pova-needs)).
+
+```sh
+curl -LO https://github.com/P0r0ro/pova/releases/download/v1.0.1/pova-v1.0.1-x86_64-linux.tar.gz
+tar xzf pova-v1.0.1-x86_64-linux.tar.gz
+install -Dm755 pova-v1.0.1-x86_64-linux/pova ~/.local/bin/pova
+```
+
+### From source
+
+Needs a Rust toolchain from <https://rustup.rs>.
+
+```sh
+cargo install --git https://github.com/P0r0ro/pova --tag v1.0.1
+```
+
+### The helpers pova needs
+
+The `.rpm` and `.deb` install these for you. For the other methods:
+
+```sh
+sudo dnf install mpv yt-dlp pipewire-utils nodejs        # Fedora
+sudo apt install mpv yt-dlp pipewire-bin nodejs          # Debian, Ubuntu
+sudo pacman -S mpv yt-dlp pipewire nodejs                # Arch
+```
+
+| Program | What pova uses it for |
+|---|---|
+| `mpv` | playing the audio, with no window |
+| `yt-dlp` | turning a YouTube Music link into an audio stream |
+| `nodejs` or `deno` | lets yt-dlp solve YouTube's JavaScript challenge |
+| `pw-record`, `pw-dump` (PipeWire tools) | capturing pova's audio for the visualizer |
+| `btop` (optional) | about 40 extra themes |
+| `mpv-mpris` (optional) | media keys and your desktop's media widget |
+
+### Play something
 
 ```sh
 pova                                   # then press / and search
