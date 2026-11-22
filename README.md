@@ -7,6 +7,10 @@
   Written in Rust. Built for people who would rather <code>alt-tab</code> to a terminal than to a browser tab.
 </p>
 
+<p align="center">
+  <a href="https://github.com/ratatui/awesome-ratatui#music-and-audio"><img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Ratatui"></a>
+</p>
+
 ---
 
 ## So what is this
