@@ -42,21 +42,20 @@ kitty shows real album art (other terminals get a blocky version).
 | [`.deb` package](#debian-and-ubuntu-deb) | Debian, Ubuntu, Linux Mint, Pop!_OS | yes |
 | [AppImage](#appimage) | any distro, nothing to install | no |
 | [Prebuilt binary](#prebuilt-binary) | any distro, a single file in your `PATH` | no |
-| [From source](#from-source) | Rust users, other CPU architectures | no |
+| [crates.io](#from-cratesio-or-source) | Rust users, other CPU architectures | no |
 
 Every file is on the [latest release](https://github.com/P0r0ro/pova/releases/latest)
 page, with a `.sha256` checksum next to it. The commands below use version 1.0.1.
 
 **Coming soon:** installing straight from a package repository, with updates
-arriving through your normal system updates. The COPR, AUR and crates.io
-packages are built and tested and only wait on the repository accounts; the
-Ubuntu PPA comes after them.
+arriving through your normal system updates. The COPR and AUR packages are
+built and tested and only wait on the repository accounts; the Ubuntu PPA
+comes after them.
 
 | Where | Command |
 |---|---|
 | Fedora (COPR) | `sudo dnf copr enable p0r0ro/pova && sudo dnf install pova` |
 | Arch (AUR) | `yay -S pova-bin` |
-| Any distro with Rust (crates.io) | `cargo install pova` |
 | Ubuntu (PPA) | `sudo add-apt-repository ppa:p0r0ro/pova && sudo apt install pova` |
 
 ### Fedora (.rpm)
@@ -103,9 +102,16 @@ tar xzf pova-v1.0.1-x86_64-linux.tar.gz
 install -Dm755 pova-v1.0.1-x86_64-linux/pova ~/.local/bin/pova
 ```
 
-### From source
+### From crates.io or source
 
-Needs a Rust toolchain from <https://rustup.rs>.
+Needs a Rust toolchain from <https://rustup.rs>. pova is
+[on crates.io](https://crates.io/crates/pova):
+
+```sh
+cargo install pova
+```
+
+Or build straight from GitHub:
 
 ```sh
 cargo install --git https://github.com/P0r0ro/pova --tag v1.0.1
