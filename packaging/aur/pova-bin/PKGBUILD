@@ -1,0 +1,39 @@
+# Maintainer: P0r0ro <250746769+P0r0ro@users.noreply.github.com>
+pkgname=pova-bin
+pkgver=1.0.1
+pkgrel=1
+pkgdesc="YouTube Music in the terminal, with a cava visualizer and btop themes"
+arch=('x86_64')
+url="https://github.com/P0r0ro/pova"
+license=('MIT')
+# pipewire-audio provides pw-record (pw-dump comes with pipewire, its dependency).
+depends=('mpv' 'yt-dlp' 'pipewire-audio' 'glibc' 'gcc-libs')
+optdepends=(
+  'nodejs: lets yt-dlp solve YouTube JavaScript challenges'
+  'python: pova-import-cookie (signing in)'
+  'mpv-mpris: media keys and the desktop media widget'
+  'btop: about 40 extra themes'
+)
+provides=('pova')
+conflicts=('pova')
+# The binary is already stripped; no debug package.
+options=('!debug')
+source=(
+  "pova-v${pkgver}-x86_64-linux.tar.gz::${url}/releases/download/v${pkgver}/pova-v${pkgver}-x86_64-linux.tar.gz"
+  "pova-${pkgver}.desktop::https://raw.githubusercontent.com/P0r0ro/pova/v${pkgver}/packaging/appimage/pova.desktop"
+  "pova-${pkgver}.png::https://raw.githubusercontent.com/P0r0ro/pova/v${pkgver}/packaging/appimage/pova.png"
+)
+sha256sums=('e59c51108c955e482fa990cfceeca4c481a675120e0374e5ebdf510f6f989932'
+            '77e8a633ec7a257a0431f1ff2b9f649871616ba0b2cf336fafa8a340bbb569de'
+            '4ce91bc0440e985c495f5c6bd57202cb0070ac2563d6ec84b7bf6aea89234d14')
+
+package() {
+  cd "pova-v${pkgver}-x86_64-linux"
+  install -Dm755 pova "${pkgdir}/usr/bin/pova"
+  install -Dm755 scripts/import-cookie.sh "${pkgdir}/usr/bin/pova-import-cookie"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/pova/README.md"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 THIRD_PARTY_NOTICES.md "${pkgdir}/usr/share/licenses/${pkgname}/THIRD_PARTY_NOTICES.md"
+  install -Dm644 "${srcdir}/pova-${pkgver}.desktop" "${pkgdir}/usr/share/applications/pova.desktop"
+  install -Dm644 "${srcdir}/pova-${pkgver}.png" "${pkgdir}/usr/share/icons/hicolor/512x512/apps/pova.png"
+}

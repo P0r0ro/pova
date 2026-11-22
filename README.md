@@ -47,6 +47,18 @@ kitty shows real album art (other terminals get a blocky version).
 Every file is on the [latest release](https://github.com/P0r0ro/pova/releases/latest)
 page, with a `.sha256` checksum next to it. The commands below use version 1.0.1.
 
+**Coming soon:** installing straight from a package repository, with updates
+arriving through your normal system updates. The COPR, AUR and crates.io
+packages are built and tested and only wait on the repository accounts; the
+Ubuntu PPA comes after them.
+
+| Where | Command |
+|---|---|
+| Fedora (COPR) | `sudo dnf copr enable p0r0ro/pova && sudo dnf install pova` |
+| Arch (AUR) | `yay -S pova-bin` |
+| Any distro with Rust (crates.io) | `cargo install pova` |
+| Ubuntu (PPA) | `sudo add-apt-repository ppa:p0r0ro/pova && sudo apt install pova` |
+
 ### Fedora (.rpm)
 
 `dnf` installs pova and pulls in mpv, yt-dlp and pipewire-utils from Fedora's
@@ -106,7 +118,7 @@ The `.rpm` and `.deb` install these for you. For the other methods:
 ```sh
 sudo dnf install mpv yt-dlp pipewire-utils nodejs        # Fedora
 sudo apt install mpv yt-dlp pipewire-bin nodejs          # Debian, Ubuntu
-sudo pacman -S mpv yt-dlp pipewire nodejs                # Arch
+sudo pacman -S mpv yt-dlp pipewire-audio nodejs          # Arch
 ```
 
 | Program | What pova uses it for |
