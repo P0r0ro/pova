@@ -8,6 +8,19 @@ repository = "https://github.com/P0r0ro/pova"
 readme = "README.md"
 keywords = ["youtube-music", "tui", "visualizer", "cava", "btop"]
 categories = ["multimedia::audio", "command-line-utilities"]
+# What goes into the crates.io package (the README's GIFs and video stay on GitHub).
+include = [
+    "src/**",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "assets/mascot-sad-cat-tui.png",
+    "scripts/import-cookie.sh",
+    "packaging/appimage/**",
+]
 
 [dependencies]
 anyhow = "1.0.104"
