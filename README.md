@@ -196,7 +196,7 @@ to sign in once (next section).
 - **Every btop theme** (`t`): pova reads btop's `.theme` files as they are, with a live preview.
 - **The Esc menu**: btop-style, with the pova logo drawn in block characters, for themes, the visualizer, autoplay and album art.
 - **Your library** (`b`): your playlists, liked songs and history once you're signed in.
-- **Your playlists** (`p`): add the song you're on to one of your playlists or a new one, and take songs out with `d`.
+- **Your playlists** (`p`): add the song you're on to one of your playlists or a new one, take songs out with `d`, and delete a playlist with `D` (it asks first).
 - **Picks up where you left off**: quit and come back to the same queue, paused at the same second.
 - **Control it from anywhere**: `pova next`, `pova add <song>`, `pova status` and more, for keyboard shortcuts and status bars. See [docs/remote-control.md](docs/remote-control.md).
 - **Mouse support**: click tabs, buttons, list rows and the progress bar.

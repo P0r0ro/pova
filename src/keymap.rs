@@ -35,6 +35,7 @@ actions! {
     Repeat => "repeat", "Cycle repeat (off / all / one)";
     Like => "like", "Like / unlike current track";
     AddToPlaylist => "add_to_playlist", "Add selection (or current track) to a playlist";
+    DeletePlaylist => "delete_playlist", "Delete the selected / open playlist (asks first)";
     VizMode => "viz_mode", "Cycle visualizer mode";
     Themes => "themes", "Theme picker";
     Help => "help", "Show this help";
@@ -213,6 +214,7 @@ fn defaults() -> Vec<(Action, &'static [&'static str])> {
         (Repeat, &["R"]),
         (Like, &["f"]),
         (AddToPlaylist, &["p"]),
+        (DeletePlaylist, &["D"]),
         (VizMode, &["v"]),
         (Themes, &["t"]),
         (Help, &["?", "F1"]),

@@ -105,6 +105,57 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             let state = *state;
             draw_menu(f, app, area, state.selected().unwrap_or(0));
         }
+        Overlay::Confirm { question, yes, .. } => {
+            let width = 60.min(area.width.saturating_sub(4)).max(24);
+            let lines = crate::ui::wrap_text(question, width.saturating_sub(4) as usize);
+            let text_h = lines.len() as u16;
+            // Border, padding, question, blank line, buttons, padding, border.
+            let h = text_h + 6;
+            let r = centered(area, width, h);
+            f.render_widget(Clear, r);
+            let block = frame(&t, "are you sure?").title_bottom(
+                Line::from(Span::styled("┐y yes · n / esc no┌", Style::new().fg(t.inactive_fg)))
+                    .alignment(Alignment::Right),
+            );
+            let inner = block.inner(r);
+            f.render_widget(block, r);
+            let text: Vec<Line> = lines.into_iter().map(Line::from).collect();
+            f.render_widget(
+                Paragraph::new(text).alignment(Alignment::Center),
+                Rect {
+                    x: inner.x + 1,
+                    y: inner.y + 1,
+                    width: inner.width.saturating_sub(2),
+                    height: text_h.min(inner.height),
+                },
+            );
+            let button = |label: &'static str, on: bool, danger: bool| {
+                let style = if on && danger {
+                    Style::new()
+                        .bg(crate::ui::ERROR_RED)
+                        .fg(Color::Rgb(0xff, 0xff, 0xff))
+                        .add_modifier(Modifier::BOLD)
+                } else if on {
+                    sel
+                } else {
+                    Style::new().fg(t.inactive_fg)
+                };
+                Span::styled(label, style)
+            };
+            let buttons = Line::from(vec![
+                button("  Yes, delete  ", *yes, true),
+                Span::raw("    "),
+                button("  No  ", !*yes, false),
+            ]);
+            f.render_widget(
+                Paragraph::new(buttons).alignment(Alignment::Center),
+                Rect {
+                    y: (inner.y + text_h + 2).min(inner.y + inner.height.saturating_sub(1)),
+                    height: 1,
+                    ..inner
+                },
+            );
+        }
         Overlay::AddToPlaylist {
             track,
             playlists,

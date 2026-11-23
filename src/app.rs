@@ -183,6 +183,14 @@ pub enum Overlay {
     Menu {
         state: TableState,
     },
+    /// Yes / No question before something that can't be undone.
+    Confirm {
+        question: String,
+        /// What "Yes" does.
+        on_yes: Confirmed,
+        /// Highlighted answer; starts on No.
+        yes: bool,
+    },
     /// Pick one of the user's playlists (or make a new one) for `track`.
     AddToPlaylist {
         track: Track,
@@ -192,6 +200,12 @@ pub enum Overlay {
         /// Some while typing a new playlist's name.
         naming: Option<String>,
     },
+}
+
+/// What a confirmed `Overlay::Confirm` does.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Confirmed {
+    DeletePlaylist { id: String, title: String },
 }
 
 /// Entries of the Esc menu (btop-style options).
@@ -1110,6 +1124,29 @@ impl App {
                 }
                 self.flash(message, false);
             }
+            YtmEvent::PlaylistDeleted { playlist_id, title } => {
+                // Close the deleted playlist if it's open, and drop it from lists.
+                while self.library.stack.len() > 1
+                    && self
+                        .library
+                        .stack
+                        .last()
+                        .is_some_and(|l| l.view == View::Playlist(playlist_id.clone()))
+                {
+                    self.library.stack.pop();
+                }
+                for lv in self.library.stack.iter_mut().chain(self.search.stack.iter_mut()) {
+                    let before = lv.items.len();
+                    lv.items
+                        .retain(|i| !matches!(i, Item::Playlist(p) if p.id == playlist_id));
+                    if lv.items.len() != before {
+                        let sel = lv.state.selected().unwrap_or(0);
+                        lv.state
+                            .select((!lv.items.is_empty()).then(|| sel.min(lv.items.len() - 1)));
+                    }
+                }
+                self.flash(format!("Deleted the playlist {title}"), false);
+            }
             YtmEvent::Rated { video_id, liked } => {
                 self.likes.insert(video_id.clone(), liked);
                 for e in &mut self.queue.entries {
@@ -1752,6 +1789,7 @@ impl App {
                 }
             }
             AddToPlaylist => self.open_playlist_picker(),
+            DeletePlaylist => self.ask_delete_playlist(),
             MoveUp | MoveDown => {
                 if self.tab == Tab::Queue
                     && let Some(i) = self.queue_state.selected()
@@ -1970,6 +2008,69 @@ impl App {
         });
     }
 
+    /// `D` in the Library tab: the open playlist, or the one selected in
+    /// "Your playlists". Asks before deleting.
+    fn ask_delete_playlist(&mut self) {
+        if self.tab != Tab::Library {
+            self.flash("Go to the Library tab (b) to delete one of your playlists", false);
+            return;
+        }
+        if !self.logged_in {
+            self.flash(
+                "Deleting playlists needs you to be signed in (pova-import-cookie chrome)",
+                true,
+            );
+            return;
+        }
+        let Some(lv) = self.library.stack.last() else { return };
+        let target = match (&lv.view, lv.selected()) {
+            (View::Playlist(id), _) => {
+                // The open playlist's own title is generic; use its name from the list.
+                let name = self
+                    .library
+                    .stack
+                    .iter()
+                    .flat_map(|l| &l.items)
+                    .find_map(|i| match i {
+                        Item::Playlist(p) if p.id == *id => Some(p.title.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| "this playlist".into());
+                Some((id.clone(), name))
+            }
+            (View::LibraryPlaylists, Some(Item::Playlist(p))) => Some((p.id.clone(), p.title.clone())),
+            _ => None,
+        };
+        let Some((id, title)) = target else {
+            self.flash(
+                "Select one of your playlists (Library → Your playlists) to delete it",
+                false,
+            );
+            return;
+        };
+        if matches!(id.trim_start_matches("VL"), "LM" | "SE") {
+            self.flash("Liked songs can't be deleted", false);
+            return;
+        }
+        self.overlay = Some(Overlay::Confirm {
+            question: format!("Delete the playlist “{title}”? This can't be undone."),
+            on_yes: Confirmed::DeletePlaylist { id, title },
+            yes: false,
+        });
+    }
+
+    fn confirmed(&mut self, what: Confirmed) {
+        match what {
+            Confirmed::DeletePlaylist { id, title } => {
+                let _ = self.tx.ytm.send(YtmReq::DeletePlaylist {
+                    playlist_id: id,
+                    title: title.clone(),
+                });
+                self.flash(format!("Deleting {title}…"), false);
+            }
+        }
+    }
+
     /// `d` in the Library tab: take the selected song out of the open playlist.
     fn remove_from_playlist(&mut self) {
         let Some(lv) = self.library.stack.last() else { return };
@@ -2087,6 +2188,22 @@ impl App {
                     _ => {}
                 }
             }
+            Overlay::Confirm { on_yes, yes, .. } => match k.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    let what = on_yes.clone();
+                    self.overlay = None;
+                    self.confirmed(what);
+                }
+                KeyCode::Enter if *yes => {
+                    let what = on_yes.clone();
+                    self.overlay = None;
+                    self.confirmed(what);
+                }
+                KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => *yes = !*yes,
+                KeyCode::Char('h') | KeyCode::Char('l') => *yes = !*yes,
+                // n, Esc, Enter on "No", anything else: cancel.
+                _ => self.overlay = None,
+            },
             Overlay::AddToPlaylist {
                 track,
                 playlists,
@@ -2837,5 +2954,89 @@ mod playlist_tests {
         let lv = app.library.stack.last().unwrap();
         assert_eq!(lv.items.len(), 1);
         assert_eq!(lv.state.selected(), Some(0));
+    }
+
+    fn library_with_playlists(app: &mut App) {
+        app.logged_in = true;
+        app.tab = Tab::Library;
+        let mut lv = ListView::new(View::LibraryPlaylists, 3);
+        lv.items = vec![
+            Item::Playlist(PlaylistRef {
+                id: "PL1".into(),
+                title: "Road trip".into(),
+                subtitle: String::new(),
+            }),
+            Item::Playlist(PlaylistRef {
+                id: "PL2".into(),
+                title: "Gym".into(),
+                subtitle: String::new(),
+            }),
+        ];
+        lv.state.select(Some(1));
+        app.library.stack = vec![lv];
+    }
+
+    fn deletes(rx: &mut UnboundedReceiver<YtmReq>) -> Vec<String> {
+        reqs(rx)
+            .into_iter()
+            .filter_map(|r| match r {
+                YtmReq::DeletePlaylist { playlist_id, .. } => Some(playlist_id),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn delete_asks_first_and_defaults_to_no() {
+        let (mut app, mut rx) = app();
+        library_with_playlists(&mut app);
+        key(&mut app, KeyCode::Char('D'));
+        let shown = screen(&mut app);
+        assert!(shown.contains("Delete the playlist “Gym”"), "{shown}");
+        assert!(shown.contains("Yes, delete"));
+        key(&mut app, KeyCode::Enter); // highlighted answer is No
+        assert!(app.overlay.is_none());
+        assert!(deletes(&mut rx).is_empty(), "Enter on the default must not delete");
+        key(&mut app, KeyCode::Char('D'));
+        key(&mut app, KeyCode::Esc);
+        assert!(deletes(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn delete_confirmed_with_y_or_yes_button() {
+        let (mut app, mut rx) = app();
+        library_with_playlists(&mut app);
+        key(&mut app, KeyCode::Char('D'));
+        key(&mut app, KeyCode::Char('y'));
+        assert_eq!(deletes(&mut rx), vec!["PL2".to_string()]);
+        key(&mut app, KeyCode::Char('D'));
+        key(&mut app, KeyCode::Left); // move to "Yes"
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(deletes(&mut rx), vec!["PL2".to_string()]);
+    }
+
+    #[test]
+    fn deleted_playlist_leaves_the_lists_and_closes() {
+        let (mut app, _rx) = app();
+        library_with_playlists(&mut app);
+        app.library.stack.push(ListView::new(View::Playlist("PL2".into()), 9));
+        app.on_ytm(YtmEvent::PlaylistDeleted {
+            playlist_id: "PL2".into(),
+            title: "Gym".into(),
+        });
+        assert_eq!(app.library.stack.len(), 1, "the open playlist view closes");
+        let lv = &app.library.stack[0];
+        assert_eq!(lv.items.len(), 1);
+        assert_eq!(lv.state.selected(), Some(0));
+    }
+
+    #[test]
+    fn liked_songs_cannot_be_deleted() {
+        let (mut app, mut rx) = app();
+        library_with_playlists(&mut app);
+        app.library.stack.push(ListView::new(View::Playlist("LM".into()), 9));
+        key(&mut app, KeyCode::Char('D'));
+        assert!(app.overlay.is_none());
+        assert!(deletes(&mut rx).is_empty());
     }
 }

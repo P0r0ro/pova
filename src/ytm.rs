@@ -92,6 +92,10 @@ pub enum YtmReq {
         video_id: String,
         title: String,
     },
+    DeletePlaylist {
+        playlist_id: String,
+        title: String,
+    },
 }
 
 /// One autocomplete entry.
@@ -137,6 +141,10 @@ pub enum YtmEvent {
     PlaylistEdited {
         message: String,
         removed: Option<(String, String)>,
+    },
+    PlaylistDeleted {
+        playlist_id: String,
+        title: String,
     },
 }
 
@@ -467,6 +475,25 @@ async fn handle(client: &Client, req: YtmReq) -> (YtmEvent, bool) {
                     },
                 }
             }
+        },
+        YtmReq::DeletePlaylist { playlist_id, title } => match need_auth(client) {
+            Err(e) => YtmEvent::Failed {
+                token: None,
+                message: e.to_string(),
+            },
+            Ok(yt) => match yt
+                .delete_playlist(PlaylistID::from_raw(bare_playlist_id(&playlist_id)))
+                .await
+            {
+                Ok(()) => YtmEvent::PlaylistDeleted { playlist_id, title },
+                Err(e) => YtmEvent::Failed {
+                    token: None,
+                    message: fail(
+                        &format!("Couldn't delete {title} (you can only delete playlists you made)"),
+                        &e,
+                    ),
+                },
+            },
         },
         YtmReq::RemoveFromPlaylist {
             playlist_id,

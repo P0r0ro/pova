@@ -14,6 +14,7 @@ including any keys you've remapped.
 | `S` `R` | shuffle, repeat (off / all / one) | `a` / `A` | add to queue / play next |
 | `f` | like or unlike the current song | `r` | start a radio from the selection |
 | `p` | add the selected (or playing) song to one of your playlists, or a new one | `d` in Library | remove the selected song from your open playlist |
+| `D` in Library | delete the selected or open playlist (asks yes / no first, starts on no) | | |
 | `v` | change visualizer mode | `d`, `J` `K`, `C` | queue: remove, move, clear |
 | `t` | theme picker (live preview) | `[` `]` | change search filter / library section |
 | `esc` | back, or the menu | `c` | jump to the playing track |

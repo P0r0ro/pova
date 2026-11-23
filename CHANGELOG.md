@@ -6,7 +6,8 @@
   second; press space to carry on. Turn it off with `resume = false`.
 - **Playlists.** `p` adds the selected (or playing) song to one of your
   playlists, or to a new private one. `d` in the Library tab takes a song out
-  of the playlist you have open.
+  of the playlist you have open, and `D` deletes a playlist after a yes / no
+  question (No is the default, so a stray Enter is safe).
 - **Control pova from anywhere.** `pova next`, `pova toggle`,
   `pova add <song>`, `pova volume +5`, `pova status -f '{artist} - {title}'`
   and more talk to the running pova, for keyboard shortcuts and status bars.
