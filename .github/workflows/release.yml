@@ -27,14 +27,14 @@ jobs:
       # Passed through env, never interpolated into scripts.
       TAG: ${{ inputs.tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
 
       # Packaging files (icon, desktop entry) and the package test script from
       # this workflow's own commit, so building an older tag by hand still
       # gets them.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           path: pkg
