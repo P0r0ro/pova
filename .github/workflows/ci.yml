@@ -1,0 +1,57 @@
+name: CI
+
+# Checks every pull request and every push to main. These jobs are the
+# required checks that protect main.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Read-only token. Pull requests from forks also run with no access to secrets
+# (this workflow uses pull_request, never pull_request_target).
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: check
+    # The oldest glibc the release binaries are built for.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      # The same gate as running it locally: fmt, clippy -D warnings, tests.
+      - run: scripts/check.sh
+
+  msrv:
+    name: msrv
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Read rust-version from Cargo.toml
+        run: echo "MSRV=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.MSRV }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --all-targets
+
+  deny:
+    name: deny
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      # Security advisories, licences, crate sources and banned crates (deny.toml).
+      - uses: EmbarkStudios/cargo-deny-action@v2

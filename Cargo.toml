@@ -2,6 +2,8 @@
 name = "pova"
 version = "1.1.0"
 edition = "2024"
+# Oldest Rust that builds pova (checked in CI by the msrv job).
+rust-version = "1.90"
 description = "btop-style YouTube Music player with a built-in cava visualizer"
 license = "MIT"
 repository = "https://github.com/P0r0ro/pova"
