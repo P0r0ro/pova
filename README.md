@@ -196,6 +196,9 @@ to sign in once (next section).
 - **Every btop theme** (`t`): pova reads btop's `.theme` files as they are, with a live preview.
 - **The Esc menu**: btop-style, with the pova logo drawn in block characters, for themes, the visualizer, autoplay and album art.
 - **Your library** (`b`): your playlists, liked songs and history once you're signed in.
+- **Your playlists** (`p`): add the song you're on to one of your playlists or a new one, and take songs out with `d`.
+- **Picks up where you left off**: quit and come back to the same queue, paused at the same second.
+- **Control it from anywhere**: `pova next`, `pova add <song>`, `pova status` and more, for keyboard shortcuts and status bars. See [docs/remote-control.md](docs/remote-control.md).
 - **Mouse support**: click tabs, buttons, list rows and the progress bar.
 
 Press `?` in pova for every key, or read [docs/keys.md](docs/keys.md).
@@ -248,6 +251,7 @@ obscure uploads and "Me at the zoo".
 - [docs/keys.md](docs/keys.md): every key
 - [docs/configuration.md](docs/configuration.md): the config file, themes, remapping keys
 - [docs/signing-in.md](docs/signing-in.md): signing in, step by step
+- [docs/remote-control.md](docs/remote-control.md): `pova next`, `pova add`, `pova status` for shortcuts and status bars
 - [docs/how-it-works.md](docs/how-it-works.md): how pova works inside, and its known limits
 - [docs/development.md](docs/development.md): building, tests, contributing
 

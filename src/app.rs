@@ -263,6 +263,8 @@ enum Pending {
     Enqueue(EnqueueMode),
     /// Play the first track of the result (`--play`).
     PlayFirst,
+    /// Enqueue the first track of the result (remote `add` / `play-next`).
+    First(EnqueueMode),
     /// The signed-in user's liked songs, for like status everywhere.
     LikedSet,
     /// The user's playlists, for the add-to-playlist picker.
@@ -1177,6 +1179,10 @@ impl App {
                     self.enqueue(tracks, mode);
                 }
             }
+            Some(Pending::First(mode)) => match items.iter().find_map(Item::as_track) {
+                Some(t) => self.enqueue(vec![t.clone()], mode),
+                None => self.flash("No results", true),
+            },
             Some(Pending::PlayFirst) => match items.iter().find_map(Item::as_track) {
                 Some(t) => self.enqueue(vec![t.clone()], EnqueueMode::PlayNow),
                 None => self.flash("No results", true),
@@ -1264,6 +1270,126 @@ impl App {
             },
         });
         self.flash("Searching…", false);
+    }
+
+    /// Search songs for `query` and enqueue the top hit (remote control).
+    fn enqueue_first(&mut self, query: String, mode: EnqueueMode) {
+        let token = self.token();
+        self.pending.insert(token, Pending::First(mode));
+        let _ = self.tx.ytm.send(YtmReq::Load {
+            token,
+            view: View::Search {
+                filter: SearchFilter::Songs,
+                query,
+            },
+        });
+    }
+
+    /// Handle a command from `pova <command>`; the answer goes back to the
+    /// client as "ok …" or "error …".
+    pub fn on_control(&mut self, cmd: crate::control::Command) -> String {
+        use crate::control::{Command as C, parse_amount};
+        self.dirty = true;
+        let has_track = self.current().is_some();
+        match cmd {
+            C::Toggle | C::Play | C::Pause if !has_track => {
+                "error the queue is empty; add something with `pova add <song>`".into()
+            }
+            C::Toggle => {
+                self.dispatch(Action::PlayPause);
+                "ok".into()
+            }
+            C::Play => {
+                if self.player.paused {
+                    self.dispatch(Action::PlayPause);
+                }
+                "ok".into()
+            }
+            C::Pause => {
+                if !self.player.paused {
+                    self.dispatch(Action::PlayPause);
+                }
+                "ok".into()
+            }
+            C::Next => {
+                self.dispatch(Action::Next);
+                "ok".into()
+            }
+            C::Prev => {
+                self.dispatch(Action::Prev);
+                "ok".into()
+            }
+            C::Like => {
+                if !self.logged_in {
+                    return "error liking songs needs you to be signed in (pova-import-cookie chrome)".into();
+                }
+                if !has_track {
+                    return "error nothing is playing".into();
+                }
+                self.dispatch(Action::Like);
+                "ok".into()
+            }
+            C::Volume(arg) => {
+                let Some((v, relative)) = parse_amount(&arg) else {
+                    return format!("error `{arg}` isn't a volume; use 40, +5 or -5");
+                };
+                let target = if relative { self.player.volume + v } else { v };
+                self.player.volume = target.clamp(0.0, 100.0).round();
+                self.player(PlayerCmd::SetVolume(self.player.volume));
+                if self.player.muted {
+                    self.player(PlayerCmd::SetMute(false));
+                }
+                format!("ok volume {}", self.player.volume)
+            }
+            C::Seek(arg) => {
+                if !has_track {
+                    return "error nothing is playing".into();
+                }
+                let Some((v, relative)) = parse_amount(&arg) else {
+                    return format!("error `{arg}` isn't a time; use 90, +10 or -10 (seconds)");
+                };
+                self.player(if relative {
+                    PlayerCmd::SeekRelative(v)
+                } else {
+                    PlayerCmd::SeekAbsolute(v.max(0.0))
+                });
+                "ok".into()
+            }
+            C::Add(q) => {
+                self.enqueue_first(q.clone(), EnqueueMode::Append);
+                format!("ok adding the top result for “{q}”")
+            }
+            C::PlayNext(q) => {
+                self.enqueue_first(q.clone(), EnqueueMode::Next);
+                format!("ok playing the top result for “{q}” next")
+            }
+            C::PlayNow(q) => {
+                self.enqueue_first(q.clone(), EnqueueMode::PlayNow);
+                format!("ok playing the top result for “{q}”")
+            }
+            C::Status(format) => format!("ok {}", self.status_line(&format)),
+        }
+    }
+
+    /// Fill a `pova status` format string. Empty when nothing is loaded.
+    pub fn status_line(&self, format: &str) -> String {
+        let Some(t) = self.current() else { return String::new() };
+        let state = if self.player.paused { "paused" } else { "playing" };
+        let liked = if is_liked(&self.likes, t) { "♥" } else { "" };
+        let duration = if self.player.duration > 0.0 {
+            self.player.duration
+        } else {
+            t.duration.unwrap_or(0.0)
+        };
+        format
+            .replace("{title}", &t.title)
+            .replace("{artist}", &t.artists)
+            .replace("{album}", t.album.as_deref().unwrap_or(""))
+            .replace("{state}", state)
+            .replace("{position}", &crate::model::format_time(self.player.time))
+            .replace("{duration}", &crate::model::format_time(duration))
+            .replace("{volume}", &format!("{}", self.player.volume.round()))
+            .replace("{liked}", liked)
     }
 
     fn load_enqueue(&mut self, view: View, mode: EnqueueMode) {

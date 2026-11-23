@@ -3,6 +3,7 @@
 mod app;
 mod art;
 mod config;
+mod control;
 mod keymap;
 mod lyrics;
 mod model;
@@ -18,7 +19,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, EventStream,
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -58,11 +59,94 @@ struct Cli {
     /// Log verbosity written to ~/.cache/pova/pova.log (error, warn, info, debug, trace).
     #[arg(long, default_value = "info")]
     log_level: tracing::Level,
+    /// Control a pova that's already running (for keybinds and scripts).
+    #[command(subcommand)]
+    command: Option<Remote>,
+}
+
+/// Commands sent to the running pova.
+#[derive(Subcommand, Debug)]
+enum Remote {
+    /// Play / pause.
+    Toggle,
+    /// Resume playback.
+    Play,
+    /// Pause playback.
+    Pause,
+    /// Next track.
+    Next,
+    /// Previous track (or restart the current one).
+    Prev,
+    /// Like / unlike the current song.
+    Like,
+    /// Set the volume: 40, +5 or -5.
+    #[command(allow_hyphen_values = true)]
+    Volume { amount: String },
+    /// Seek: 90 (seconds in), +10 or -10.
+    #[command(allow_hyphen_values = true)]
+    Seek { amount: String },
+    /// Search and add the first song to the end of the queue.
+    Add {
+        #[arg(required = true)]
+        query: Vec<String>,
+    },
+    /// Search and play the first song after the current one.
+    PlayNext {
+        #[arg(required = true)]
+        query: Vec<String>,
+    },
+    /// Search and play the first song right away.
+    PlayNow {
+        #[arg(required = true)]
+        query: Vec<String>,
+    },
+    /// Print what's playing, e.g. for a status bar.
+    Status {
+        /// Placeholders: {title} {artist} {album} {state} {position} {duration} {volume} {liked}
+        #[arg(short, long, default_value = control::STATUS_FORMAT)]
+        format: String,
+    },
+}
+
+impl Remote {
+    fn command(self) -> control::Command {
+        use control::Command as C;
+        match self {
+            Remote::Toggle => C::Toggle,
+            Remote::Play => C::Play,
+            Remote::Pause => C::Pause,
+            Remote::Next => C::Next,
+            Remote::Prev => C::Prev,
+            Remote::Like => C::Like,
+            Remote::Volume { amount } => C::Volume(amount),
+            Remote::Seek { amount } => C::Seek(amount),
+            Remote::Add { query } => C::Add(query.join(" ")),
+            Remote::PlayNext { query } => C::PlayNext(query.join(" ")),
+            Remote::PlayNow { query } => C::PlayNow(query.join(" ")),
+            Remote::Status { format } => C::Status(format),
+        }
+    }
 }
 
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     let paths = Paths::new()?;
+
+    if let Some(remote) = cli.command.take() {
+        let socket = control::socket_path(&paths.runtime_dir);
+        return match control::send(&socket, &remote.command()) {
+            Ok(answer) => {
+                if !answer.is_empty() {
+                    println!("{answer}");
+                }
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("pova: {e}");
+                std::process::exit(1);
+            }
+        };
+    }
 
     if cli.list_themes {
         for (name, path) in theme::list_themes(&paths.config_dir) {
@@ -242,6 +326,17 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
     let (resolve_ev_tx, mut resolve_rx) = unbounded_channel();
     tokio::spawn(resolve::run(resolve_req_rx, resolve_ev_tx));
 
+    // Remote control (`pova next` etc.).
+    let control_socket = control::socket_path(&paths.runtime_dir);
+    let (control_tx, mut control_rx) = unbounded_channel::<control::Request>();
+    let control_owned = match control::bind(&control_socket) {
+        Some(listener) => {
+            tokio::spawn(control::serve(listener, control_tx));
+            true
+        }
+        None => false,
+    };
+
     let (art_tx, art_req_rx) = unbounded_channel();
     let (art_ev_tx, mut art_rx) = unbounded_channel();
     tokio::spawn(art::run(paths.cache_dir.join("art"), art_req_rx, art_ev_tx));
@@ -320,6 +415,10 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
                 Some(ev) = lyrics_rx.recv() => app.on_lyrics(ev),
                 Some(ev) = art_rx.recv() => app.on_art(ev),
                 Some(ev) = resolve_rx.recv() => app.on_resolved(ev),
+                Some(req) = control_rx.recv() => {
+                    let answer = app.on_control(req.command);
+                    let _ = req.reply.send(answer);
+                }
                 Some(done) = resized_rx.recv() => {
                     match done {
                         Ok(resp) => {
@@ -370,6 +469,9 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
     let _ = player_tx.send(PlayerCmd::Quit);
     let _ = tokio::time::timeout(Duration::from_secs(2), player_task).await;
     viz.shutdown();
+    if control_owned {
+        let _ = std::fs::remove_file(&control_socket);
+    }
     restore_terminal(enhanced);
     tracing::info!("bye");
     result
