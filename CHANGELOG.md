@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Expanded startup preflight checks.** Detect `rpm-ostree` (atomic Fedora),
+  `apt` (with `apt update`), `pacman`, `zypper`, `xbps-install`, `apk`,
+  `emerge`, `eopkg`, and `nix`; catch common mistakes (forgot `chmod +x`,
+  `~/.local/bin` not on `PATH`, Flatpak-only `mpv`, non-TTY stdin/stdout); and
+  show a startup notice if PipeWire visualizer tools are missing.
+
 ## 1.1.1 — community fixes
 
 The first release with outside contributions: thanks to
@@ -12,12 +20,9 @@ The first release with outside contributions: thanks to
   menu.
 - **Search box word delete.** `Ctrl+W` deletes the previous word and `Ctrl+U`
   clears before the cursor.
-- **Startup preflight checks.** Refuse to launch into a broken silent TUI when
-  `mpv` or `yt-dlp` is missing (or when stdout/stdin isn't a TTY), print the
-  exact install command for the detected distro (`dnf`, `rpm-ostree`, `apt`,
-  `pacman`, `zypper`, `xbps-install`, `apk`, `emerge`, `eopkg`, `nix`), catch
-  common mistakes (forgot `chmod +x`, `~/.local/bin` not on `PATH`, Flatpak
-  `mpv`), and warn if PipeWire visualizer tools are missing.
+- **Startup dependency check.** Refuse to start into a broken silent TUI when
+  `mpv` or `yt-dlp` is missing, and print the exact install command for the
+  detected package manager (`dnf`, `apt`, `pacman`, `zypper`).
 - **Fixes.** Keep LRCLIB lyrics matches when a track has no duration (such as
   artist top songs), preserve stereo L/R alignment in PipeWire capture, prevent
   infinite retry loops on unplayable tracks, keep mpv startup errors visible,

@@ -751,11 +751,17 @@ mod dep_tests {
         let mut p = probe_with(&ostree_has, &none, &none);
         p.ostree = true;
         let err = missing_deps_message(&p).unwrap_err();
-        assert!(err.contains("rpm-ostree install mpv yt-dlp pipewire-utils nodejs"), "{err}");
+        assert!(
+            err.contains("rpm-ostree install mpv yt-dlp pipewire-utils nodejs"),
+            "{err}"
+        );
 
         // Debian / Ubuntu, Arch, openSUSE, Void, Alpine, Gentoo, Solus, NixOS
         for (mgr, expected) in [
-            ("apt", "sudo apt update && sudo apt install mpv yt-dlp pipewire-bin nodejs"),
+            (
+                "apt",
+                "sudo apt update && sudo apt install mpv yt-dlp pipewire-bin nodejs",
+            ),
             ("pacman", "sudo pacman -S mpv yt-dlp pipewire-audio nodejs"),
             ("zypper", "sudo zypper install mpv yt-dlp pipewire-tools nodejs"),
             ("xbps-install", "sudo xbps-install -S mpv yt-dlp pipewire nodejs"),
