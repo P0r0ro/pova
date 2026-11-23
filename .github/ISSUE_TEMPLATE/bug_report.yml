@@ -1,0 +1,47 @@
+name: Bug report
+description: Something in pova doesn't work as it should
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Include any error message pova showed.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: pova version
+      description: Output of `pova --version`
+      placeholder: pova 1.1.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed pova
+      options:
+        - .rpm package
+        - .deb package
+        - AppImage
+        - prebuilt binary
+        - cargo install
+        - built from source
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Distro and terminal
+      placeholder: Fedora 45 KDE, kitty 0.44
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        The relevant lines from `~/.cache/pova/pova.log` (around when it happened).
+        Please read them before posting and remove anything personal, and never paste the contents of cookie.txt.
+      render: text
