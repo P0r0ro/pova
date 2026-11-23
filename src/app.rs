@@ -12,7 +12,7 @@ use ratatui_image::thread::ThreadProtocol;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::art::{ArtEvent, ArtReq};
-use crate::config::{Config, Paths, State, VizMode};
+use crate::config::{Config, Paths, Session, State, VizMode};
 use crate::keymap::{Action, Keymap};
 use crate::lyrics::{Lyrics, LyricsEvent, LyricsReq};
 use crate::model::{Item, Track, video_id_from_url};
@@ -500,6 +500,50 @@ impl App {
         }
     }
 
+    /// Save the queue and position for `resume` (no-op when it's off).
+    pub fn save_session(&self) {
+        if !self.cfg.resume {
+            return;
+        }
+        Session {
+            tracks: self.queue.entries.iter().map(|e| e.track.clone()).collect(),
+            current: self.queue.current,
+            position: self.player.time,
+            shuffle: self.queue.shuffle,
+            repeat: self.queue.repeat.label().into(),
+        }
+        .save(&self.paths.session_file());
+    }
+
+    /// Bring back the last run's queue, paused at the same spot. Returns
+    /// whether anything was restored.
+    pub fn restore_session(&mut self) -> bool {
+        if !self.cfg.resume {
+            return false;
+        }
+        let Some(s) = Session::load(&self.paths.session_file()) else {
+            return false;
+        };
+        let current = s.current.unwrap_or(0).min(s.tracks.len() - 1);
+        let duration = s.tracks[current].duration.unwrap_or(f64::MAX);
+        // Within the last few seconds: start the song over instead.
+        let start = (s.position > 1.0 && s.position < duration - 3.0).then_some(s.position);
+        self.queue.shuffle = false; // keep the saved order as is
+        self.queue.replace(s.tracks, current);
+        self.queue.shuffle = s.shuffle;
+        self.queue.repeat = match s.repeat.as_str() {
+            "all" => Repeat::All,
+            "one" => Repeat::One,
+            _ => Repeat::Off,
+        };
+        if self.queue.repeat == Repeat::One {
+            self.player(PlayerCmd::SetLoopFile(true));
+        }
+        self.load_index(current, start, true);
+        self.flash("Picked up where you left off. Press space to play", false);
+        true
+    }
+
     pub fn save_state(&self) {
         State {
             theme: Some(self.theme.name.clone()),
@@ -547,6 +591,11 @@ impl App {
     // ───────────────────────────── playback ─────────────────────────────
 
     fn play_index(&mut self, i: usize) {
+        self.load_index(i, None, false);
+    }
+
+    /// Load track `i`, optionally `start` seconds in and/or paused (resume).
+    fn load_index(&mut self, i: usize, start: Option<f64>, paused: bool) {
         if i >= self.queue.len() {
             return;
         }
@@ -559,8 +608,13 @@ impl App {
         self.start_timer = Some((Instant::now(), direct));
         let next = self.desired_next();
         self.next_sent = next.clone();
-        self.player(PlayerCmd::Load { url, next });
-        self.player.time = 0.0;
+        self.player(PlayerCmd::Load {
+            url,
+            next,
+            start,
+            paused,
+        });
+        self.player.time = start.unwrap_or(0.0);
         self.player.duration = self.queue.get(i).and_then(|t| t.duration).unwrap_or(0.0);
         self.load_started = Some(Instant::now());
         self.on_track_changed();
@@ -685,6 +739,7 @@ impl App {
 
     fn on_track_changed(&mut self) {
         self.dirty = true;
+        self.save_session();
         self.prefetch_upcoming();
         self.lyrics_scroll = None;
         let Some(track) = self.current().cloned() else { return };
@@ -2195,7 +2250,7 @@ mod resolve_tests {
         let cmds = drain(&mut h.player);
         assert!(
             cmds.iter().any(
-                |c| matches!(c, PlayerCmd::Load { url, next: Some(n) } if *url == direct("a") && *n == direct("b"))
+                |c| matches!(c, PlayerCmd::Load { url, next: Some(n), .. } if *url == direct("a") && *n == direct("b"))
             ),
             "{cmds:?}"
         );

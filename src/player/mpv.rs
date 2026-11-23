@@ -22,6 +22,10 @@ pub enum PlayerCmd {
     Load {
         url: String,
         next: Option<String>,
+        /// Start this many seconds in (resume).
+        start: Option<f64>,
+        /// Load without starting playback (resume).
+        paused: bool,
     },
     /// Replace whatever is queued after the current file.
     SetNext(Option<String>),
@@ -184,9 +188,19 @@ async fn run_inner(
                 let Some(cmd) = cmd else { break };
                 tracing::debug!("mpv <- {cmd:?}");
                 match cmd {
-                    PlayerCmd::Load { url, next } => {
-                        send(&mut write, json!(["loadfile", url, "replace"])).await?;
-                        send(&mut write, json!(["set_property", "pause", false])).await?;
+                    PlayerCmd::Load { url, next, start, paused } => {
+                        if start.is_some() || paused {
+                            // Per-file options (mpv >= 0.38: index, then options).
+                            let mut opts = Vec::new();
+                            if let Some(s) = start {
+                                opts.push(format!("start={s:.1}"));
+                            }
+                            send(&mut write, json!(["set_property", "pause", paused])).await?;
+                            send(&mut write, json!(["loadfile", url, "replace", -1, opts.join(",")])).await?;
+                        } else {
+                            send(&mut write, json!(["loadfile", url, "replace"])).await?;
+                            send(&mut write, json!(["set_property", "pause", false])).await?;
+                        }
                         if let Some(next) = next {
                             send(&mut write, json!(["loadfile", next, "append"])).await?;
                         }

@@ -1,6 +1,6 @@
 //! Internal data model, independent of ytmapi-rs types.
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Track {
     pub video_id: String,
     pub title: String,

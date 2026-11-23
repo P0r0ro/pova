@@ -288,8 +288,11 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
     for w in key_warnings {
         app.flash(w, true);
     }
-    if let Some(q) = cli.play {
-        app.play_query(q);
+    match cli.play {
+        Some(q) => app.play_query(q),
+        None => {
+            app.restore_session();
+        }
     }
 
     let mut events = EventStream::new();
@@ -363,6 +366,7 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
 
     // ── teardown ──
     app.save_state();
+    app.save_session();
     let _ = player_tx.send(PlayerCmd::Quit);
     let _ = tokio::time::timeout(Duration::from_secs(2), player_task).await;
     viz.shutdown();

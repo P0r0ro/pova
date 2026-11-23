@@ -45,6 +45,10 @@ impl Paths {
     pub fn state_file(&self) -> PathBuf {
         self.state_dir.join("state.toml")
     }
+    /// The queue and position from the last run (`resume`).
+    pub fn session_file(&self) -> PathBuf {
+        self.state_dir.join("session.json")
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +140,8 @@ pub struct Config {
     pub image_protocol: String,
     /// Extra arguments passed to mpv.
     pub mpv_args: Vec<String>,
+    /// Restore the queue and playback position from the last run (paused).
+    pub resume: bool,
     /// Action name -> key(s), e.g. `next = ["N", "ctrl+right"]`.
     pub keys: HashMap<String, Vec<String>>,
     pub viz: VizConfig,
@@ -152,6 +158,7 @@ impl Default for Config {
             album_art: true,
             image_protocol: "auto".into(),
             mpv_args: Vec::new(),
+            resume: true,
             keys: HashMap::new(),
             viz: VizConfig::default(),
         }
@@ -170,6 +177,49 @@ impl Config {
         }
         let text = std::fs::read_to_string(path)?;
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    }
+}
+
+/// The play queue and position, saved on quit and on every track change so
+/// pova can pick up where it left off.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Session {
+    pub tracks: Vec<crate::model::Track>,
+    pub current: Option<usize>,
+    /// Seconds into the current track.
+    pub position: f64,
+    pub shuffle: bool,
+    /// "off", "all" or "one".
+    pub repeat: String,
+}
+
+impl Session {
+    pub fn load(path: &Path) -> Option<Session> {
+        let text = std::fs::read_to_string(path).ok()?;
+        match serde_json::from_str::<Session>(&text) {
+            Ok(s) if !s.tracks.is_empty() => Some(s),
+            Ok(_) => None,
+            Err(e) => {
+                tracing::warn!("ignoring unreadable {}: {e}", path.display());
+                None
+            }
+        }
+    }
+    pub fn save(&self, path: &Path) {
+        if self.tracks.is_empty() {
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+        // Write then rename, so a crash mid-write can't leave a broken file.
+        let tmp = path.with_extension("json.tmp");
+        let res = serde_json::to_vec(self)
+            .map_err(std::io::Error::other)
+            .and_then(|bytes| std::fs::write(&tmp, bytes))
+            .and_then(|()| std::fs::rename(&tmp, path));
+        if let Err(e) = res {
+            tracing::warn!("saving session: {e}");
+        }
     }
 }
 
@@ -200,5 +250,40 @@ impl State {
         {
             tracing::warn!("saving state: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Session;
+    use crate::model::Track;
+
+    #[test]
+    fn session_round_trips_and_empty_removes_file() {
+        let dir = std::env::temp_dir().join(format!("pova-session-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.json");
+        let track = Track {
+            video_id: "abc".into(),
+            title: "Fine Again".into(),
+            artists: "Seether".into(),
+            album: None,
+            album_id: None,
+            duration: Some(243.0),
+            thumbnail: None,
+            liked: Some(true),
+        };
+        let s = Session {
+            tracks: vec![track],
+            current: Some(0),
+            position: 133.5,
+            shuffle: true,
+            repeat: "one".into(),
+        };
+        s.save(&path);
+        assert_eq!(Session::load(&path), Some(s));
+        Session::default().save(&path);
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

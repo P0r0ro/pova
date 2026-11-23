@@ -11,6 +11,7 @@ autoplay = true            # keep playing similar songs when the queue ends
 album_art = true
 image_protocol = "auto"    # auto | kitty | sixel | iterm2 | halfblocks
 mpv_args = []              # extra flags for mpv, if you want them
+resume = true              # start where you left off: same queue, same spot, paused
 
 [viz]
 mode = "bars"              # bars | mirror | mono | wave
