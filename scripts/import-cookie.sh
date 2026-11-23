@@ -56,4 +56,4 @@ open(dst, "w").write("; ".join(f"{k}={v}" for k, v in jar.items()) + "\n")
 print(f"wrote {len(jar)} cookies to {dst}")
 PY
 chmod 600 "$out"
-echo "done - restart pova; the player box should say 'signed in'"
+echo "done - pova picks it up by itself within a few seconds (older versions: restart pova); the player box should say 'signed in'"
