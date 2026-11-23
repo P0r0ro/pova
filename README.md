@@ -42,7 +42,8 @@ kitty shows real album art (other terminals get a blocky version).
 
 | Method | Best for | Installs mpv, yt-dlp and the PipeWire tools for you |
 |---|---|---|
-| [`.rpm` package](#fedora-rpm) | Fedora and other dnf-based distros | yes |
+| [Fedora COPR](#fedora-copr) | Fedora: one command, updates with your system | yes |
+| [`.rpm` package](#fedora-rpm) | Fedora and other dnf-based distros, without adding a repository | yes |
 | [`.deb` package](#debian-and-ubuntu-deb) | Debian, Ubuntu, Linux Mint, Pop!_OS | yes |
 | [AppImage](#appimage) | any distro, nothing to install | no |
 | [Prebuilt binary](#prebuilt-binary) | any distro, a single file in your `PATH` | no |
@@ -51,16 +52,27 @@ kitty shows real album art (other terminals get a blocky version).
 Every file is on the [latest release](https://github.com/P0r0ro/pova/releases/latest)
 page, with a `.sha256` checksum next to it. The commands below use version 1.1.1.
 
-**Coming soon:** installing straight from a package repository, with updates
-arriving through your normal system updates. The COPR and AUR packages are
-built and tested and only wait on the repository accounts; the Ubuntu PPA
-comes after them.
+**Coming soon:** more package repositories, so updates arrive through your
+normal system updates. The AUR package is built and tested and waits on an
+account; the Ubuntu PPA comes after it.
 
 | Where | Command |
 |---|---|
-| Fedora (COPR) | `sudo dnf copr enable p0r0ro/pova && sudo dnf install pova` |
 | Arch (AUR) | `yay -S pova-bin` |
 | Ubuntu (PPA) | `sudo add-apt-repository ppa:p0r0ro/pova && sudo apt install pova` |
+
+### Fedora (COPR)
+
+The easiest way on Fedora: add pova's [COPR repository](https://copr.fedorainfracloud.org/coprs/p0r0ro/pova/)
+once, and from then on pova updates along with the rest of your system. `dnf`
+pulls in mpv, yt-dlp and pipewire-utils, and pova shows up in your app menu.
+
+```sh
+sudo dnf copr enable p0r0ro/pova
+sudo dnf install pova
+```
+
+Built for Fedora 43, 44, 45 and rawhide.
 
 ### Fedora (.rpm)
 

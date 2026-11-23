@@ -35,8 +35,9 @@ Dependabot opens weekly dependency PRs, which go through the same checks.
 and prints the remaining steps: a PR with the CHANGELOG entry, a rehearsal
 run, merge, then pushing the `vX.Y.Z` tag, which builds, tests and publishes
 every format from that one commit. `release.yml` refuses a tag that doesn't
-match the version in Cargo.toml. Afterwards `scripts/release.sh aur` fills in
-the AUR checksums (in its own PR), and `scripts/release.sh check` confirms
-every channel agrees.
+match the version in Cargo.toml. Afterwards `scripts/release.sh copr` builds the
+tag on [Fedora COPR](https://copr.fedorainfracloud.org/coprs/p0r0ro/pova/),
+`scripts/release.sh aur` fills in the AUR checksums (in its own PR), and
+`scripts/release.sh check` confirms every channel agrees.
 
 Back to the [README](../README.md).
