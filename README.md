@@ -227,6 +227,22 @@ song has no lyrics anywhere: not on LRCLIB, not on YouTube Music, nowhere. It's
 not angry. It's just disappointed. Mostly it shows up for instrumentals,
 obscure uploads and "Me at the zoo".
 
+## If you like pova
+
+<p align="center">
+  <a href="https://github.com/P0r0ro/pova"><img src="assets/mascot-star.gif" alt="the pova cat hugging a pink heart" width="160"></a>
+</p>
+
+<p align="center">
+  pova is a one-person project, and a star is how other people find it.<br>
+  If it earned a spot in your terminal, starring the repo helps more than you'd think<br>
+  and means a lot to the person who built it. It also keeps the cat from being sad.
+</p>
+
+<p align="center">
+  <a href="https://github.com/P0r0ro/pova"><img src="https://img.shields.io/github/stars/P0r0ro/pova?style=social" alt="Star pova on GitHub"></a>
+</p>
+
 ## More
 
 - [docs/keys.md](docs/keys.md): every key
