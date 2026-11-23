@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 1.1.1 — community fixes
+
+The first release with outside contributions: thanks to
+[chrollo-03](https://github.com/chrollo-03) for the fixes and polish below (#1).
 
 - **Mouse & overlay controls.** Click or scroll the volume bar in the Controls
   box to set volume, click the `vol` / `%` label to mute, and click the

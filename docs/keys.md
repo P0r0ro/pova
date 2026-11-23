@@ -22,7 +22,8 @@ including any keys you've remapped.
 
 **In the search box:** type, and suggestions appear underneath. `↑` `↓` pick
 one, `→` accepts the dimmed completion, `tab` changes the filter (Songs,
-Videos, Albums, Artists, Playlists), `enter` searches.
+Videos, Albums, Artists, Playlists), `enter` searches. `ctrl+w` deletes the
+word before the cursor and `ctrl+u` everything before it.
 
 **The Esc menu.** Like btop, pressing `esc` when there's nothing to go back
 from opens a menu with the pova logo drawn in block characters, in the logo's
@@ -30,7 +31,11 @@ own violet-to-pink gradient. From it you pick a theme, change the visualizer
 mode, and turn autoplay and album art on and off. Your choices are saved.
 
 The mouse works too: click tabs, buttons, list rows and the progress bar, and
-scroll through lists.
+scroll through lists. Click or scroll the volume bar to set the volume, click
+`vol` or the percentage to mute, and click the `v <mode>` badge on the
+visualizer to switch modes. In the help, theme and Esc menu popups the mouse
+wheel scrolls, `g` / `G` jump to the top / bottom, and in the Esc menu `←` / `→`
+change a setting backwards / forwards.
 
 To remap keys, see [configuration.md](configuration.md).
 
