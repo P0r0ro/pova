@@ -398,15 +398,16 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
     for w in key_warnings {
         app.flash(w, true);
     }
-    if app.show_viz && (mpv::which("pw-record").is_none() || mpv::which("pw-dump").is_none()) {
-        tracing::warn!("pw-record or pw-dump not found on PATH; visualizer will stay idle");
-        app.flash("Visualizer needs PipeWire tools (pw-record / pw-dump)", false);
-    }
     match cli.play {
         Some(q) => app.play_query(q),
         None => {
             app.restore_session();
         }
+    }
+    // After resume / --play, so their status line doesn't replace this notice.
+    if app.show_viz && (mpv::which("pw-record").is_none() || mpv::which("pw-dump").is_none()) {
+        tracing::warn!("pw-record or pw-dump not found on PATH; visualizer will stay idle");
+        app.flash("Visualizer needs PipeWire tools (pw-record / pw-dump)", false);
     }
 
     let mut events = EventStream::new();
