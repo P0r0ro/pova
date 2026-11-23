@@ -2598,7 +2598,7 @@ mod resolve_tests {
     fn harness() -> Harness {
         let (p, prx) = unbounded_channel();
         let (r, rrx) = unbounded_channel();
-        let tmp = std::env::temp_dir().join(format!("pova-resolve-test-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join("pova-resolve-test");
         std::fs::create_dir_all(&tmp).unwrap();
         let paths = Paths {
             config_dir: tmp.clone(),
