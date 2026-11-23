@@ -124,9 +124,24 @@ pub fn audio_client_name() -> String {
     format!("pova-{}", std::process::id())
 }
 
+fn is_executable(p: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    p.is_file() && p.metadata().is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+}
+
 pub fn which(bin: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join(bin)).find(|p| p.is_file())
+    std::env::split_paths(&path)
+        .map(|d| d.join(bin))
+        .find(|p| is_executable(p))
+}
+
+/// File named `bin` on PATH that exists but lacks execute permission (`chmod +x`).
+pub fn find_non_executable(bin: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|d| d.join(bin))
+        .find(|p| p.is_file() && !is_executable(p))
 }
 
 /// Run the player actor until `Quit` or mpv exits.
