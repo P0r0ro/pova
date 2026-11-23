@@ -215,7 +215,9 @@ pova-import-cookie chrome              # installed with the .deb / .rpm
 # works with firefox, chromium, brave, edge, vivaldi, opera too
 ```
 
-Restart pova and the player box says **● signed in**. The cookie is saved in
+A couple of seconds later the player box says **● signed in**, no restart
+needed. If Google ever expires the cookie, pova tells you; run the script again.
+The cookie is saved in
 `~/.config/pova/cookie.txt`, readable only by you. Treat it like a password.
 No script? [docs/signing-in.md](docs/signing-in.md) has the manual way.
 

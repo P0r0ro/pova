@@ -29,11 +29,13 @@ It never prints the cookie values. To use a specific browser profile, write
 4. Paste it on one line into `~/.config/pova/cookie.txt`, then run
    `chmod 600 ~/.config/pova/cookie.txt`.
 
-Restart pova. The bottom of the player box says **● signed in**.
+Within a couple of seconds the bottom of the player box says **● signed in**.
+pova notices the new cookie by itself, even while it's running.
 
 **Treat `cookie.txt` like a password.** It grants access to your Google
-account. It stays on your machine and pova only sends it to YouTube Music. If
-pova ever goes back to "○ signed out", Google has rotated the cookie, so run
-the script again.
+account. It stays on your machine and pova only sends it to YouTube Music. Google
+replaces these cookies now and then. When that happens pova switches to
+"○ signed out" and shows a message saying so: run the script again and pova
+signs back in on its own, no restart needed.
 
 Back to the [README](../README.md).
