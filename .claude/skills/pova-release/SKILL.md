@@ -38,9 +38,17 @@ OK before step 6.**
      shows `max_version` X.Y.Z (the workflow publishes it with the
      `CARGO_REGISTRY_TOKEN` secret; if it printed "No CARGO_REGISTRY_TOKEN",
      tell the maintainer).
-8. **AUR checksums** on a branch: `scripts/release.sh aur`, commit, PR, merge.
-9. Tell the maintainer what was published and where; update the local
-   install if they use one (`cargo install --path . --locked --force`).
+8. **Fedora COPR**: `scripts/release.sh copr` points the COPR package at the
+   new tag and builds it (uses the maintainer's `~/.config/copr`; if that
+   file is missing, ask them to save it from
+   https://copr.fedorainfracloud.org/api/ — never write the token yourself).
+   Then verify on a clean container:
+   `podman run --rm fedora:latest bash -c 'dnf install -y dnf-plugins-core; dnf copr enable -y p0r0ro/pova; dnf install -y pova; pova --version'`.
+9. **AUR checksums** on a branch: `scripts/release.sh aur`, commit, PR, merge.
+10. Tell the maintainer what was published and where; update their local
+    install (`~/.cargo/bin`): `cargo install --path <checkout of the tag>
+    --locked --force` and copy `scripts/import-cookie.sh` to
+    `~/.cargo/bin/pova-import-cookie`.
 
 ## If something fails
 

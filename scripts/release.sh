@@ -6,6 +6,8 @@
 #                                   spec and the AUR package
 #   scripts/release.sh aur          after the GitHub release is published:
 #                                   put the real checksums into the AUR package
+#   scripts/release.sh copr         after the tag is pushed: build that version
+#                                   on Fedora COPR (needs ~/.config/copr)
 #   scripts/release.sh check        every channel matches Cargo.toml
 #
 # The .rpm, .deb, AppImage and tarball are all built by
@@ -51,7 +53,8 @@ bump() {
   echo "  3. merge the PR once CI is green"
   echo "  4. on main: git tag -a v$new -m 'pova $new' && git push origin v$new"
   echo "     (CI builds and tests .rpm .deb AppImage tarball, uploads them, publishes to crates.io)"
-  echo "  5. scripts/release.sh aur on a branch, PR, merge   (AUR checksums)"
+  echo "  5. scripts/release.sh copr                          (Fedora COPR build of the tag)"
+  echo "  6. scripts/release.sh aur on a branch, PR, merge   (AUR checksums)"
   check
 }
 
@@ -85,9 +88,20 @@ PY
   echo "AUR checksums updated for $v:"; printf '  %s\n' "${sums[@]}"
 }
 
+copr_build() {
+  local v; v=$(current)
+  git rev-parse -q --verify "refs/tags/v$v" > /dev/null || { echo "tag v$v doesn't exist yet" >&2; return 1; }
+  local copr=(uv tool run --from copr-cli copr-cli)
+  command -v copr-cli > /dev/null && copr=(copr-cli)
+  "${copr[@]}" edit-package-scm pova --name pova --clone-url https://github.com/P0r0ro/pova \
+    --commit "v$v" --method make_srpm --webhook-rebuild off
+  "${copr[@]}" build-package pova --name pova
+}
+
 case "${1:-}" in
   bump) bump "${2:?usage: scripts/release.sh bump X.Y.Z}" ;;
   aur) aur_sums ;;
+  copr) copr_build ;;
   check) check ;;
-  *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
