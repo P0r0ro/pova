@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.1.2 — smoother first run, offline recovery
+
+More fixes from [chrollo-03](https://github.com/chrollo-03) (#12, #14): clearer
+help when something is missing on first launch, recovery after starting
+offline, and a safer sign-in cookie.
 
 - **Expanded startup preflight checks.** Detect `rpm-ostree` (atomic Fedora),
   `apt` (with `apt update`), `pacman`, `zypper`, `xbps-install`, `apk`,
