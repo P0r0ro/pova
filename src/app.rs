@@ -306,6 +306,29 @@ enum Pending {
     PlaylistPicker,
 }
 
+/// Expand `{key}` placeholders in a single pass so substituted values
+/// containing braces (e.g. a track titled `{state}`) are never re-expanded.
+fn expand_template(template: &str, lookup: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        rest = &rest[open..];
+        if let Some(close) = rest.find('}') {
+            let key = &rest[1..close];
+            if let Some(val) = lookup(key) {
+                out.push_str(&val);
+                rest = &rest[close + 1..];
+                continue;
+            }
+        }
+        out.push('{');
+        rest = &rest[1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Is `track` liked? Known statuses (`likes`) win over what the list said.
 pub fn is_liked(likes: &HashMap<String, bool>, track: &Track) -> bool {
     likes.get(&track.video_id).copied().or(track.liked).unwrap_or(false)
@@ -1073,7 +1096,9 @@ impl App {
             YtmEvent::Auth { logged_in, message } => {
                 let was = self.logged_in;
                 self.logged_in = logged_in;
-                if !logged_in {
+                if !logged_in || !was {
+                    // Drop stale likes on sign-out or when switching accounts.
+                    self.likes.clear();
                     self.likes_loaded = false;
                 }
                 if logged_in && !was && self.auth_seen {
@@ -1176,11 +1201,17 @@ impl App {
             }
             YtmEvent::PlaylistEdited { message, removed } => {
                 if let Some((playlist_id, video_id)) = removed {
+                    let bare = playlist_id.strip_prefix("VL").unwrap_or(&playlist_id);
                     for lv in self.library.stack.iter_mut().chain(self.search.stack.iter_mut()) {
-                        if lv.view == View::Playlist(playlist_id.clone()) {
+                        if let View::Playlist(id) = &lv.view
+                            && id.strip_prefix("VL").unwrap_or(id) == bare
+                            && let Some(pos) = lv
+                                .items
+                                .iter()
+                                .position(|i| matches!(i, Item::Track(t) if t.video_id == video_id))
+                        {
                             let sel = lv.state.selected().unwrap_or(0);
-                            lv.items
-                                .retain(|i| !matches!(i, Item::Track(t) if t.video_id == video_id));
+                            lv.items.remove(pos);
                             lv.state
                                 .select((!lv.items.is_empty()).then(|| sel.min(lv.items.len() - 1)));
                         }
@@ -1189,20 +1220,21 @@ impl App {
                 self.flash(message, false);
             }
             YtmEvent::PlaylistDeleted { playlist_id, title } => {
+                let bare = playlist_id.strip_prefix("VL").unwrap_or(&playlist_id);
+                let same = |id: &str| id.strip_prefix("VL").unwrap_or(id) == bare;
                 // Close the deleted playlist if it's open, and drop it from lists.
                 while self.library.stack.len() > 1
                     && self
                         .library
                         .stack
                         .last()
-                        .is_some_and(|l| l.view == View::Playlist(playlist_id.clone()))
+                        .is_some_and(|l| matches!(&l.view, View::Playlist(id) if same(id)))
                 {
                     self.library.stack.pop();
                 }
                 for lv in self.library.stack.iter_mut().chain(self.search.stack.iter_mut()) {
                     let before = lv.items.len();
-                    lv.items
-                        .retain(|i| !matches!(i, Item::Playlist(p) if p.id == playlist_id));
+                    lv.items.retain(|i| !matches!(i, Item::Playlist(p) if same(&p.id)));
                     if lv.items.len() != before {
                         let sel = lv.state.selected().unwrap_or(0);
                         lv.state
@@ -1475,22 +1507,28 @@ impl App {
     /// Fill a `pova status` format string. Empty when nothing is loaded.
     pub fn status_line(&self, format: &str) -> String {
         let Some(t) = self.current() else { return String::new() };
-        let state = if self.player.paused { "paused" } else { "playing" };
+        let state = if self.player.paused || self.player.idle {
+            "paused"
+        } else {
+            "playing"
+        };
         let liked = if is_liked(&self.likes, t) { "♥" } else { "" };
         let duration = if self.player.duration > 0.0 {
             self.player.duration
         } else {
             t.duration.unwrap_or(0.0)
         };
-        format
-            .replace("{title}", &t.title)
-            .replace("{artist}", &t.artists)
-            .replace("{album}", t.album.as_deref().unwrap_or(""))
-            .replace("{state}", state)
-            .replace("{position}", &crate::model::format_time(self.player.time))
-            .replace("{duration}", &crate::model::format_time(duration))
-            .replace("{volume}", &format!("{}", self.player.volume.round()))
-            .replace("{liked}", liked)
+        expand_template(format, |key| match key {
+            "title" => Some(t.title.clone()),
+            "artist" => Some(t.artists.clone()),
+            "album" => Some(t.album.clone().unwrap_or_default()),
+            "state" => Some(state.to_string()),
+            "position" => Some(crate::model::format_time(self.player.time)),
+            "duration" => Some(crate::model::format_time(duration)),
+            "volume" => Some(format!("{}", self.player.volume.round())),
+            "liked" => Some(liked.to_string()),
+            _ => None,
+        })
     }
 
     fn load_enqueue(&mut self, view: View, mode: EnqueueMode) {
@@ -1507,13 +1545,19 @@ impl App {
             Event::Key(k) if k.kind != KeyEventKind::Release => self.on_key(k),
             Event::Mouse(m) => self.on_mouse(m),
             Event::Resize(..) => self.dirty = true,
-            Event::Paste(text) if self.search.editing => {
-                let before = self.search.input.clone();
-                for c in text.chars().filter(|c| !c.is_control()) {
-                    self.insert_char(c);
+            Event::Paste(text) => {
+                if let Some(Overlay::AddToPlaylist { naming: Some(name), .. }) = self.overlay.as_mut() {
+                    let room = 150usize.saturating_sub(name.chars().count());
+                    name.extend(text.chars().filter(|c| !c.is_control()).take(room));
+                    self.dirty = true;
+                } else if self.search.editing {
+                    let before = self.search.input.clone();
+                    for c in text.chars().filter(|c| !c.is_control()) {
+                        self.insert_char(c);
+                    }
+                    self.on_input_changed(&before);
+                    self.dirty = true;
                 }
-                self.on_input_changed(&before);
-                self.dirty = true;
             }
             _ => {}
         }
@@ -2099,10 +2143,12 @@ impl App {
             token,
             view: View::LibraryPlaylists,
         });
+        let mut state = TableState::default();
+        state.select(Some(0));
         self.overlay = Some(Overlay::AddToPlaylist {
             track,
             playlists: None,
-            state: TableState::default(),
+            state,
             naming: None,
         });
     }
@@ -2488,6 +2534,11 @@ impl App {
     }
 
     fn on_click(&mut self, x: u16, y: u16) {
+        // Error box is drawn on top of overlays, so clicking it closes it first.
+        if matches!(self.hits.at(x, y), Some((_, Hit::CloseError))) {
+            self.flash = None;
+            return;
+        }
         if let Some(overlay) = self.overlay.take() {
             if let Overlay::Themes { original, .. } = overlay {
                 self.theme = original;
@@ -3180,6 +3231,102 @@ mod resolve_tests {
             drain(&mut h.player).iter().any(|c| matches!(c, PlayerCmd::Load { .. })),
             "play while idle should load the current track"
         );
+    }
+
+    #[test]
+    fn status_line_avoids_placeholder_injection_and_reports_idle_paused() {
+        let mut h = harness();
+        let mut t = track("a");
+        t.title = "Song {state} {volume}".into();
+        t.artists = "Band {title}".into();
+        h.app.queue.replace(vec![t], 0);
+        h.app.player.idle = true;
+        h.app.player.paused = false;
+        let line = h.app.status_line("{state}: {artist} - {title}");
+        assert_eq!(line, "paused: Band {title} - Song {state} {volume}");
+    }
+
+    #[test]
+    fn clicking_error_box_closes_it_before_overlay_underneath() {
+        let mut h = harness();
+        h.app.dispatch(Action::Menu);
+        h.app.flash("something broke", true);
+        h.app.hits.add(Rect::new(2, 10, 30, 4), Hit::CloseError);
+        h.app.on_terminal(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 11,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert!(h.app.flash.is_none(), "error box should close first");
+        assert!(
+            matches!(h.app.overlay, Some(Overlay::Menu { .. })),
+            "overlay underneath should remain open"
+        );
+    }
+
+    #[test]
+    fn sign_out_clears_stale_likes() {
+        let mut h = harness();
+        h.app.logged_in = true;
+        h.app.likes.insert("vid1".into(), true);
+        h.app.likes_loaded = true;
+        h.app.on_ytm(YtmEvent::Auth {
+            logged_in: false,
+            message: None,
+        });
+        assert!(h.app.likes.is_empty());
+        assert!(!h.app.likes_loaded);
+    }
+
+    #[test]
+    fn playlist_remove_drops_one_duplicate_and_delete_ignores_vl_prefix() {
+        let mut h = harness();
+        let mut lv = ListView::new(View::Playlist("VLPL1".into()), 1);
+        lv.loading = false;
+        lv.items = vec![Item::Track(track("dup")), Item::Track(track("dup"))];
+        lv.state.select(Some(0));
+        let mut root = ListView::new(View::LibraryPlaylists, 2);
+        root.loading = false;
+        root.items = vec![Item::Playlist(crate::model::PlaylistRef {
+            id: "PL1".into(),
+            title: "Mix".into(),
+            subtitle: String::new(),
+        })];
+        h.app.library.stack = vec![root, lv];
+
+        // Removing one occurrence of a duplicated track must leave the other.
+        h.app.on_ytm(YtmEvent::PlaylistEdited {
+            message: "Removed".into(),
+            removed: Some(("PL1".into(), "dup".into())),
+        });
+        assert_eq!(h.app.library.stack[1].items.len(), 1);
+
+        // Deleting with VL prefix must pop and remove even when list stored bare id.
+        h.app.on_ytm(YtmEvent::PlaylistDeleted {
+            playlist_id: "VLPL1".into(),
+            title: "Mix".into(),
+        });
+        assert_eq!(h.app.library.stack.len(), 1);
+        assert!(h.app.library.stack[0].items.is_empty());
+    }
+
+    #[test]
+    fn add_to_playlist_highlights_first_row_and_accepts_paste() {
+        let mut h = harness();
+        h.app.logged_in = true;
+        h.app.queue.replace(vec![track("a")], 0);
+        h.app.dispatch(Action::AddToPlaylist);
+        if let Some(Overlay::AddToPlaylist { state, naming, .. }) = h.app.overlay.as_mut() {
+            assert_eq!(state.selected(), Some(0));
+            *naming = Some(String::new());
+        } else {
+            panic!("expected AddToPlaylist overlay");
+        }
+        h.app.on_terminal(Event::Paste("Road\nTrip".into()));
+        if let Some(Overlay::AddToPlaylist { naming, .. }) = &h.app.overlay {
+            assert_eq!(naming.as_deref(), Some("RoadTrip"));
+        }
     }
 }
 

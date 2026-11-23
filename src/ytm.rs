@@ -174,9 +174,7 @@ pova picks up the new cookie by itself, no restart needed.";
 
 pub async fn run(cookie_file: PathBuf, mut reqs: UnboundedReceiver<YtmReq>, events: UnboundedSender<YtmEvent>) {
     let mut cookie_stamp = file_stamp(&cookie_file);
-    let Some(mut client) = connect(&cookie_file, &events).await else {
-        return;
-    };
+    let mut client = connect(&cookie_file, &events).await;
     // Requests run as separate tasks; one that finds the login rejected
     // reports it here so the client can drop back to signed-out.
     let (expired_tx, mut expired_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
@@ -186,43 +184,74 @@ pub async fn run(cookie_file: PathBuf, mut reqs: UnboundedReceiver<YtmReq>, even
         tokio::select! {
             req = reqs.recv() => {
                 let Some(req) = req else { break };
-                let client = client.clone();
+                // If startup happened offline, reconnect lazily once the network is back.
+                if client.is_none() {
+                    client = connect(&cookie_file, &events).await;
+                }
+                let Some(c) = client.clone() else {
+                    let _ = events.send(offline_event(req));
+                    continue;
+                };
                 let events = events.clone();
                 let expired_tx = expired_tx.clone();
                 tokio::spawn(async move {
-                    let (ev, auth_rejected) = handle(&client, req).await;
+                    let (ev, auth_rejected) = handle(&c, req).await;
                     let _ = events.send(ev);
-                    if auth_rejected && matches!(client, Client::Auth(_)) {
+                    if auth_rejected && matches!(c, Client::Auth(_)) {
                         let _ = expired_tx.send(());
                     }
                 });
             }
             Some(()) = expired_rx.recv() => {
-                if matches!(client, Client::Auth(_)) {
+                if matches!(client, Some(Client::Auth(_))) {
                     tracing::warn!("login cookie rejected; continuing signed out");
                     let _ = events.send(YtmEvent::Auth {
                         logged_in: false,
                         message: Some(SIGNED_OUT.into()),
                     });
                     if let Ok(yt) = YtMusic::new_unauthenticated().await {
-                        client = Client::Anon(yt);
+                        client = Some(Client::Anon(yt));
                     }
                 }
             }
             _ = watch.tick() => {
-                // A freshly imported cookie signs pova back in without a restart.
+                // A freshly imported cookie signs pova back in without a restart;
+                // removing the cookie file drops back to signed-out.
                 let stamp = file_stamp(&cookie_file);
                 if stamp != cookie_stamp {
                     cookie_stamp = stamp;
                     if stamp.is_some() {
                         tracing::info!("cookie file changed; reconnecting");
                         if let Some(c) = connect(&cookie_file, &events).await {
-                            client = c;
+                            client = Some(c);
                         }
+                    } else if matches!(client, Some(Client::Auth(_))) {
+                        tracing::info!("cookie file removed; continuing signed out");
+                        let _ = events.send(YtmEvent::Auth {
+                            logged_in: false,
+                            message: None,
+                        });
+                        client = YtMusic::new_unauthenticated().await.ok().map(Client::Anon);
                     }
                 }
             }
         }
+    }
+}
+
+fn offline_event(req: YtmReq) -> YtmEvent {
+    let message = "couldn't reach YouTube Music. Check your internet connection and try again.".to_string();
+    match req {
+        YtmReq::Load { token, .. } => YtmEvent::Failed {
+            token: Some(token),
+            message,
+        },
+        YtmReq::Suggest { query } => YtmEvent::Suggestions {
+            query,
+            items: Vec::new(),
+        },
+        YtmReq::Lyrics { video_id } => YtmEvent::Lyrics { video_id, text: None },
+        _ => YtmEvent::Failed { token: None, message },
     }
 }
 
@@ -1088,5 +1117,22 @@ mod correction_tests {
         let (text, _) = explain("error sending request for url (https://music.youtube.com/...)");
         assert!(text.contains("internet connection"));
         assert_eq!(explain("something odd").0, "something odd");
+    }
+
+    #[test]
+    fn offline_requests_fail_cleanly_instead_of_hanging() {
+        use super::{SearchFilter, View, YtmEvent, YtmReq, offline_event};
+        let ev = offline_event(YtmReq::Load {
+            token: 7,
+            view: View::Search {
+                filter: SearchFilter::Songs,
+                query: "x".into(),
+            },
+        });
+        assert!(matches!(ev, YtmEvent::Failed { token: Some(7), .. }));
+        let ev = offline_event(YtmReq::Suggest { query: "ab".into() });
+        assert!(matches!(ev, YtmEvent::Suggestions { items, .. } if items.is_empty()));
+        let ev = offline_event(YtmReq::Lyrics { video_id: "v1".into() });
+        assert!(matches!(ev, YtmEvent::Lyrics { text: None, .. }));
     }
 }

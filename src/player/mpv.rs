@@ -189,14 +189,14 @@ async fn run_inner(
                 tracing::debug!("mpv <- {cmd:?}");
                 match cmd {
                     PlayerCmd::Load { url, next, start, paused } => {
-                        if start.is_some() || paused {
+                        if let Some(s) = start {
                             // Per-file options (mpv >= 0.38: index, then options).
-                            let mut opts = Vec::new();
-                            if let Some(s) = start {
-                                opts.push(format!("start={s:.1}"));
-                            }
                             send(&mut write, json!(["set_property", "pause", paused])).await?;
-                            send(&mut write, json!(["loadfile", url, "replace", -1, opts.join(",")])).await?;
+                            send(&mut write, json!(["loadfile", url, "replace", -1, format!("start={s:.1}")])).await?;
+                        } else if paused {
+                            // Plain 3-arg loadfile works on older mpv (< 0.38) too.
+                            send(&mut write, json!(["set_property", "pause", true])).await?;
+                            send(&mut write, json!(["loadfile", url, "replace"])).await?;
                         } else {
                             send(&mut write, json!(["loadfile", url, "replace"])).await?;
                             send(&mut write, json!(["set_property", "pause", false])).await?;

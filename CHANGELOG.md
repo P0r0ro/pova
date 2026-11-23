@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- **Offline recovery & cookie hot-reload.** Starting pova while offline no
+  longer permanently stops YouTube Music requests; pova reconnects on the next
+  request once the network is back. Deleting `cookie.txt` signs out live,
+  signing out clears stale `♥` likes, and `import-cookie.sh` now writes
+  `cookie.txt` atomically with mode 600.
+- **Corrupt album art recovery.** Album art is decoded before being cached
+  atomically, and corrupt cached files are removed and re-downloaded instead of
+  staying broken.
+- **Fixes & polish.** Single-pass `pova status` template expansion (prevents
+  track titles containing `{...}` from re-expanding) and accurate `{state}`
+  while idle; clicking an error box closes it before any overlay underneath;
+  removing a duplicate track from a playlist drops only one copy and playlist
+  deletion matches with or without the `VL` prefix; `mpv < 0.38` compatible
+  load when resuming at 0:00; horizontal scrolling for long search queries; and
+  initial selection + paste support in the Add to Playlist overlay.
+
 ## 1.1.1 — community fixes
 
 The first release with outside contributions: thanks to
