@@ -1405,13 +1405,13 @@ impl App {
                 "ok".into()
             }
             C::Play => {
-                if self.player.paused {
+                if self.player.paused || (self.player.idle && self.load_started.is_none()) {
                     self.dispatch(Action::PlayPause);
                 }
                 "ok".into()
             }
             C::Pause => {
-                if !self.player.paused {
+                if !self.player.paused && !(self.player.idle && self.load_started.is_none()) {
                     self.dispatch(Action::PlayPause);
                 }
                 "ok".into()
@@ -2220,6 +2220,7 @@ impl App {
             self.start_timer = None;
             self.autoplay_requested = None;
             self.consecutive_errors = 0;
+            self.save_session();
             return;
         }
         self.queue_state.select(Some(i.min(self.queue.len() - 1)));
@@ -2371,6 +2372,8 @@ impl App {
                     (KeyCode::Esc, _) | (_, Some(Action::AddToPlaylist)) => self.overlay = None,
                     (_, Some(Action::Down)) => state.select(Some((cur + 1) % len)),
                     (_, Some(Action::Up)) => state.select(Some((cur + len - 1) % len)),
+                    (_, Some(Action::Top)) => state.select(Some(0)),
+                    (_, Some(Action::Bottom)) => state.select(Some(len - 1)),
                     (KeyCode::Enter, _) if cur == 0 => *naming = Some(String::new()),
                     (KeyCode::Enter, _) => {
                         if let Some(p) = playlists.as_ref().and_then(|p| p.get(cur - 1)) {
@@ -2452,6 +2455,18 @@ impl App {
                     let next = if down { (cur + 1) % len } else { (cur + len - 1) % len };
                     state.select(Some(next));
                 }
+                Overlay::AddToPlaylist {
+                    playlists,
+                    state,
+                    naming,
+                    ..
+                } if naming.is_none() => {
+                    let len = playlists.as_ref().map_or(1, |p| p.len() + 1);
+                    let cur = state.selected().unwrap_or(0).min(len - 1);
+                    let next = if down { (cur + 1) % len } else { (cur + len - 1) % len };
+                    state.select(Some(next));
+                }
+                Overlay::Confirm { .. } | Overlay::AddToPlaylist { .. } => {}
             }
             return;
         }
@@ -2780,9 +2795,14 @@ mod resolve_tests {
     }
 
     fn harness() -> Harness {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CASE: AtomicUsize = AtomicUsize::new(0);
         let (p, prx) = unbounded_channel();
         let (r, rrx) = unbounded_channel();
-        let tmp = std::env::temp_dir().join("pova-resolve-test");
+        // Reuse one root dir across runs while isolating parallel tests.
+        let tmp = std::env::temp_dir()
+            .join("pova-resolve-test")
+            .join(format!("case-{}", CASE.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir_all(&tmp).unwrap();
         let paths = Paths {
             config_dir: tmp.clone(),
@@ -3129,6 +3149,23 @@ mod resolve_tests {
                 .flash
                 .as_ref()
                 .is_some_and(|f| f.text.contains("failed to start mpv"))
+        );
+    }
+
+    #[test]
+    fn remote_pause_on_idle_queue_does_not_start_playback() {
+        let mut h = harness();
+        h.app.queue.replace(vec![track("a")], 0);
+        h.app.player.idle = true;
+        h.app.player.paused = false;
+        assert_eq!(h.app.on_control(crate::control::Command::Pause), "ok");
+        assert!(drain(&mut h.player).is_empty(), "pause while idle must not load");
+        assert_eq!(h.app.on_control(crate::control::Command::Play), "ok");
+        assert!(
+            drain(&mut h.player)
+                .iter()
+                .any(|c| matches!(c, PlayerCmd::Load { .. })),
+            "play while idle should load the current track"
         );
     }
 }
