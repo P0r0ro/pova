@@ -162,7 +162,9 @@ pub fn now_playing(f: &mut Frame, app: &mut App, area: Rect) {
     y += 1;
     if y < bottom {
         let r = Rect::new(area.x + 2, y, area.width.saturating_sub(4), 1);
-        let status = if app.player.buffering || (app.player.idle && app.current().is_some() && !app.player.paused) {
+        let status = if app.player.error.is_some() {
+            "mpv unavailable".into()
+        } else if app.player.buffering || (app.player.idle && app.current().is_some() && !app.player.paused) {
             format!("{} loading", spinner())
         } else if app.player.paused {
             "paused".into()

@@ -191,6 +191,8 @@ pub struct PlayerState {
     pub idle: bool,
     pub buffering: bool,
     pub ready: bool,
+    /// Set if mpv failed to start or exited unexpectedly.
+    pub error: Option<String>,
 }
 
 pub enum Overlay {
@@ -660,6 +662,14 @@ impl App {
         let Some(track) = self.queue.get(i).cloned() else {
             return;
         };
+        if let Some(err) = self.player.error.clone() {
+            self.load_started = None;
+            self.player.time = 0.0;
+            self.player.duration = track.duration.unwrap_or(0.0);
+            self.flash(err, true);
+            self.on_track_changed();
+            return;
+        }
         let (url, direct) = self.play_url(&track);
         self.direct_loaded = direct.then(|| track.video_id.clone());
         self.start_timer = Some((Instant::now(), direct));
@@ -931,6 +941,7 @@ impl App {
         match ev {
             PlayerEvent::Ready => {
                 self.player.ready = true;
+                self.player.error = None;
                 self.player(PlayerCmd::SetVolume(self.player.volume));
             }
             PlayerEvent::TimePos(t) => {
@@ -1031,10 +1042,22 @@ impl App {
                     }
                 }
             }
-            PlayerEvent::Error(e) => self.flash(format!("mpv: {e}"), true),
+            PlayerEvent::Error(e) => {
+                let msg = format!("mpv: {e}");
+                self.player.error = Some(msg.clone());
+                self.load_started = None;
+                self.flash(msg, true);
+            }
             PlayerEvent::Exited => {
-                self.flash("mpv exited — playback unavailable", true);
                 self.player.ready = false;
+                self.load_started = None;
+                // Keep a more specific startup error (e.g. "mpv not installed")
+                // instead of overwriting it milliseconds later.
+                if self.player.error.is_none() {
+                    let msg = "mpv exited — playback unavailable".to_string();
+                    self.player.error = Some(msg.clone());
+                    self.flash(msg, true);
+                }
             }
         }
         self.dirty = true;
@@ -3085,6 +3108,28 @@ mod resolve_tests {
         // Playing the second duplicate track in a playlist must start at index 1, not 0.
         h.app.dispatch(Action::Select);
         assert_eq!(h.app.queue.current, Some(1));
+    }
+
+    #[test]
+    fn missing_mpv_keeps_startup_error_and_does_not_spin_loading() {
+        let mut h = harness();
+        h.app.on_player(PlayerEvent::Error("failed to start mpv (is it installed?)".into()));
+        h.app.on_player(PlayerEvent::Exited);
+        assert!(
+            h.app
+                .flash
+                .as_ref()
+                .is_some_and(|f| f.text.contains("failed to start mpv"))
+        );
+        h.app.queue.replace(vec![track("a")], 0);
+        h.app.play_index(0);
+        assert!(h.app.load_started.is_none());
+        assert!(
+            h.app
+                .flash
+                .as_ref()
+                .is_some_and(|f| f.text.contains("failed to start mpv"))
+        );
     }
 }
 
