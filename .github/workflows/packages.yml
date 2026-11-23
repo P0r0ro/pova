@@ -29,7 +29,7 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
@@ -43,7 +43,7 @@ jobs:
           mkdir out
           cp target/release/pova target/debian/*.deb target/generate-rpm/*.rpm out/
           ls -l out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packages
           path: out/
@@ -62,10 +62,10 @@ jobs:
           - { kind: bin, image: "archlinux:latest" }
     name: install (${{ matrix.image }})
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           sparse-checkout: scripts
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: packages
           path: out
@@ -87,7 +87,7 @@ jobs:
     # sure it still does (BuildRequires, vendoring, file list).
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Build the SRPM and rebuild it on Fedora
         run: |
           docker run --rm -v "$PWD:/src" -w /src fedora:latest bash -euc '

@@ -27,7 +27,7 @@ jobs:
     # The oldest glibc the release binaries are built for.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -39,7 +39,7 @@ jobs:
     name: msrv
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Read rust-version from Cargo.toml
         run: echo "MSRV=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@master
@@ -52,6 +52,6 @@ jobs:
     name: deny
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # Security advisories, licences, crate sources and banned crates (deny.toml).
       - uses: EmbarkStudios/cargo-deny-action@v2
