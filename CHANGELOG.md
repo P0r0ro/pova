@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Expanded startup preflight checks.** Detect `rpm-ostree` (atomic Fedora),
+  `apt` (with `apt update`), `pacman`, `zypper`, `xbps-install`, `apk`,
+  `emerge`, `eopkg`, and `nix`; catch common mistakes (forgot `chmod +x`,
+  `~/.local/bin` not on `PATH`, Flatpak-only `mpv`, non-TTY stdin/stdout); and
+  show a startup notice if PipeWire visualizer tools are missing.
 - **Offline recovery & cookie hot-reload.** Starting pova while offline no
   longer permanently stops YouTube Music requests; pova reconnects on the next
   request once the network is back. Deleting `cookie.txt` signs out live,

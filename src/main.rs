@@ -163,6 +163,16 @@ fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
+    use std::io::IsTerminal;
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        eprintln!(
+            "pova's interface needs an interactive terminal.\n\
+             To control a running pova from a script, use a subcommand like `pova toggle` or `pova status`.\n\
+             Run `pova --help` for the full list."
+        );
+        std::process::exit(1);
+    }
+
     // Logs go to a file only; the TUI owns the terminal.
     let appender = tracing_appender::rolling::never(&paths.cache_dir, "pova.log");
     let (writer, _log_guard) = tracing_appender::non_blocking(appender);
@@ -394,6 +404,11 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
             app.restore_session();
         }
     }
+    // After resume / --play, so their status line doesn't replace this notice.
+    if app.show_viz && (mpv::which("pw-record").is_none() || mpv::which("pw-dump").is_none()) {
+        tracing::warn!("pw-record or pw-dump not found on PATH; visualizer will stay idle");
+        app.flash("Visualizer needs PipeWire tools (pw-record / pw-dump)", false);
+    }
 
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / 60.0));
@@ -482,58 +497,218 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
     result
 }
 
-/// Verify playback-critical helpers (`mpv`, `yt-dlp`) exist on PATH before
-/// entering the TUI. Returns a message with a distro-appropriate install
-/// command when something is missing.
-fn check_runtime_deps() -> Result<(), String> {
-    missing_deps_message(|bin| mpv::which(bin).is_some())
+/// Environment probed during the startup dependency check (abstracted for tests).
+struct DepProbe<'a> {
+    has: &'a dyn Fn(&str) -> bool,
+    non_exec: &'a dyn Fn(&str) -> Option<PathBuf>,
+    local_bin: &'a dyn Fn(&str) -> Option<PathBuf>,
+    flatpak_mpv: bool,
+    ostree: bool,
 }
 
-fn missing_deps_message(has: impl Fn(&str) -> bool) -> Result<(), String> {
-    let mut missing = Vec::new();
-    if !has("mpv") {
-        missing.push("mpv");
+/// Verify playback-critical helpers (`mpv`, `yt-dlp`) exist on PATH before
+/// entering the TUI. Returns a message with distro-appropriate install
+/// instructions and common mistake hints when something is missing.
+fn check_runtime_deps() -> Result<(), String> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let has = |bin: &str| mpv::which(bin).is_some();
+    let non_exec = |bin: &str| mpv::find_non_executable(bin);
+    let local_bin = |bin: &str| {
+        let p = home.as_ref()?.join(".local/bin").join(bin);
+        p.is_file().then_some(p)
+    };
+    let flatpak_mpv = std::path::Path::new("/var/lib/flatpak/app/io.mpv.Mpv").is_dir()
+        || home
+            .as_ref()
+            .is_some_and(|h| h.join(".local/share/flatpak/app/io.mpv.Mpv").is_dir());
+    let ostree = std::path::Path::new("/run/ostree-booted").exists();
+    missing_deps_message(&DepProbe {
+        has: &has,
+        non_exec: &non_exec,
+        local_bin: &local_bin,
+        flatpak_mpv,
+        ostree,
+    })
+}
+
+struct DistroPkg {
+    cmd: &'static str,
+    mpv: &'static str,
+    yt_dlp: &'static str,
+    pipewire: &'static str,
+    node: &'static str,
+    note: Option<&'static str>,
+}
+
+fn detect_distro(probe: &DepProbe<'_>) -> Option<DistroPkg> {
+    let has = probe.has;
+    if (probe.ostree || !has("dnf")) && has("rpm-ostree") {
+        Some(DistroPkg {
+            cmd: "rpm-ostree install",
+            mpv: "mpv",
+            yt_dlp: "yt-dlp",
+            pipewire: "pipewire-utils",
+            node: "nodejs",
+            note: Some("Then reboot (or run pova inside a distrobox/toolbox)."),
+        })
+    } else if has("dnf") {
+        Some(DistroPkg {
+            cmd: "sudo dnf install",
+            mpv: "mpv",
+            yt_dlp: "yt-dlp",
+            pipewire: "pipewire-utils",
+            node: "nodejs",
+            note: None,
+        })
+    } else if has("apt-get") || has("apt") {
+        Some(DistroPkg {
+            cmd: "sudo apt update && sudo apt install",
+            mpv: "mpv",
+            yt_dlp: "yt-dlp",
+            pipewire: "pipewire-bin",
+            node: "nodejs",
+            note: None,
+        })
+    } else if has("pacman") {
+        Some(DistroPkg {
+            cmd: "sudo pacman -S",
+            mpv: "mpv",
+            yt_dlp: "yt-dlp",
+            pipewire: "pipewire-audio",
+            node: "nodejs",
+            note: None,
+        })
+    } else if has("zypper") {
+        Some(DistroPkg {
+            cmd: "sudo zypper install",
+            mpv: "mpv",
+            yt_dlp: "yt-dlp",
+            pipewire: "pipewire-tools",
+            node: "nodejs",
+            note: None,
+        })
+    } else if has("xbps-install") {
+        Some(DistroPkg {
+            cmd: "sudo xbps-install -S",
+            mpv: "mpv",
+            yt_dlp: "yt-dlp",
+            pipewire: "pipewire",
+            node: "nodejs",
+            note: None,
+        })
+    } else if has("apk") {
+        Some(DistroPkg {
+            cmd: "sudo apk add",
+            mpv: "mpv",
+            yt_dlp: "yt-dlp",
+            pipewire: "pipewire-tools",
+            node: "nodejs",
+            note: None,
+        })
+    } else if has("emerge") {
+        Some(DistroPkg {
+            cmd: "sudo emerge",
+            mpv: "media-video/mpv",
+            yt_dlp: "net-misc/yt-dlp",
+            pipewire: "media-video/pipewire",
+            node: "net-libs/nodejs",
+            note: None,
+        })
+    } else if has("eopkg") {
+        Some(DistroPkg {
+            cmd: "sudo eopkg install",
+            mpv: "mpv",
+            yt_dlp: "yt-dlp",
+            pipewire: "pipewire",
+            node: "nodejs",
+            note: None,
+        })
+    } else if has("nixos-rebuild") || has("nix") {
+        Some(DistroPkg {
+            cmd: "nix-shell -p",
+            mpv: "mpv",
+            yt_dlp: "yt-dlp",
+            pipewire: "pipewire",
+            node: "nodejs",
+            note: Some("Or add those packages to environment.systemPackages in configuration.nix."),
+        })
+    } else {
+        None
     }
-    if !has("yt-dlp") {
-        missing.push("yt-dlp");
-    }
-    if missing.is_empty() {
+}
+
+fn missing_deps_message(probe: &DepProbe<'_>) -> Result<(), String> {
+    let has = probe.has;
+    let missing_mpv = !has("mpv");
+    let missing_ytdlp = !has("yt-dlp");
+    if !missing_mpv && !missing_ytdlp {
         return Ok(());
     }
 
+    let mut missing = Vec::new();
+    if missing_mpv {
+        missing.push("mpv");
+    }
+    if missing_ytdlp {
+        missing.push("yt-dlp");
+    }
     let missing_pw = !has("pw-record") || !has("pw-dump");
     let missing_js = !has("node") && !has("deno");
     let what = missing.join(" and ");
     let verb = if missing.len() == 1 { "it isn't" } else { "they aren't" };
-    let mut msg = format!("pova needs {what} to play music, but {verb} installed.\n");
+    let mut msg = format!("pova needs {what} to play music, but {verb} on your PATH.\n");
 
-    let pm = if has("dnf") {
-        Some(("sudo dnf install", "pipewire-utils"))
-    } else if has("apt-get") || has("apt") {
-        Some(("sudo apt install", "pipewire-bin"))
-    } else if has("pacman") {
-        Some(("sudo pacman -S", "pipewire-audio"))
-    } else if has("zypper") {
-        Some(("sudo zypper install", "pipewire-tools"))
-    } else {
-        None
-    };
+    // Catch common mistakes before telling the user to reinstall packages.
+    for &bin in &missing {
+        if let Some(p) = (probe.non_exec)(bin) {
+            msg.push_str(&format!(
+                "\nFound {bin} at {}, but it isn't executable. Fix it with:\n  chmod +x {}\n",
+                p.display(),
+                p.display()
+            ));
+        } else if let Some(p) = (probe.local_bin)(bin) {
+            msg.push_str(&format!(
+                "\nFound {bin} at {}, but ~/.local/bin isn't in your PATH.\n\
+                 Add this to your shell rc file (~/.bashrc or ~/.zshrc) and restart your terminal:\n  \
+                 export PATH=\"$HOME/.local/bin:$PATH\"\n",
+                p.display()
+            ));
+        }
+    }
+    if missing_mpv && probe.flatpak_mpv {
+        msg.push_str(
+            "\nNote: mpv looks installed as a Flatpak, which pova can't control over IPC.\n\
+             Install your distro's native mpv package instead.\n",
+        );
+    }
 
-    if let Some((install, pw_pkg)) = pm {
-        let mut pkgs: Vec<&str> = missing;
+    if let Some(d) = detect_distro(probe) {
+        let mut pkgs = Vec::new();
+        if missing_mpv {
+            pkgs.push(d.mpv);
+        }
+        if missing_ytdlp {
+            pkgs.push(d.yt_dlp);
+        }
         if missing_pw {
-            pkgs.push(pw_pkg);
+            pkgs.push(d.pipewire);
         }
         if missing_js {
-            pkgs.push("nodejs");
+            pkgs.push(d.node);
         }
-        msg.push_str(&format!("\nInstall with:\n  {install} {}\n", pkgs.join(" ")));
+        msg.push_str(&format!("\nInstall with:\n  {} {}\n", d.cmd, pkgs.join(" ")));
+        if let Some(note) = d.note {
+            msg.push_str(&format!("{note}\n"));
+        }
     } else {
         msg.push_str(
             "\nInstall the helpers for your distro:\n  \
-             sudo dnf install mpv yt-dlp pipewire-utils nodejs   # Fedora\n  \
-             sudo apt install mpv yt-dlp pipewire-bin nodejs     # Debian / Ubuntu\n  \
-             sudo pacman -S mpv yt-dlp pipewire-audio nodejs     # Arch\n",
+             sudo dnf install mpv yt-dlp pipewire-utils nodejs      # Fedora / RHEL\n  \
+             sudo apt update && sudo apt install mpv yt-dlp pipewire-bin nodejs  # Debian / Ubuntu\n  \
+             sudo pacman -S mpv yt-dlp pipewire-audio nodejs        # Arch\n  \
+             sudo zypper install mpv yt-dlp pipewire-tools nodejs   # openSUSE\n  \
+             sudo xbps-install -S mpv yt-dlp pipewire nodejs        # Void\n  \
+             sudo apk add mpv yt-dlp pipewire-tools nodejs          # Alpine\n",
         );
     }
     Err(msg)
@@ -541,28 +716,85 @@ fn missing_deps_message(has: impl Fn(&str) -> bool) -> Result<(), String> {
 
 #[cfg(test)]
 mod dep_tests {
-    use super::missing_deps_message;
+    use super::*;
+
+    fn probe_with<'a>(
+        has: &'a dyn Fn(&str) -> bool,
+        non_exec: &'a dyn Fn(&str) -> Option<PathBuf>,
+        local_bin: &'a dyn Fn(&str) -> Option<PathBuf>,
+    ) -> DepProbe<'a> {
+        DepProbe {
+            has,
+            non_exec,
+            local_bin,
+            flatpak_mpv: false,
+            ostree: false,
+        }
+    }
 
     #[test]
     fn ok_when_mpv_and_ytdlp_present() {
-        assert_eq!(missing_deps_message(|b| matches!(b, "mpv" | "yt-dlp")), Ok(()));
+        let none = |_: &str| None;
+        let has = |b: &str| matches!(b, "mpv" | "yt-dlp");
+        assert_eq!(missing_deps_message(&probe_with(&has, &none, &none)), Ok(()));
     }
 
     #[test]
-    fn suggests_exact_dnf_command_when_only_mpv_missing() {
-        let err =
-            missing_deps_message(|b| matches!(b, "yt-dlp" | "pw-record" | "pw-dump" | "node" | "dnf")).unwrap_err();
-        assert!(err.contains("pova needs mpv to play music"));
-        assert!(err.contains("sudo dnf install mpv\n"));
+    fn suggests_exact_command_per_distro() {
+        let none = |_: &str| None;
+        // Fedora with only mpv missing
+        let fedora = |b: &str| matches!(b, "yt-dlp" | "pw-record" | "pw-dump" | "node" | "dnf");
+        let err = missing_deps_message(&probe_with(&fedora, &none, &none)).unwrap_err();
+        assert!(err.contains("sudo dnf install mpv\n"), "{err}");
+
+        // Atomic Fedora (Silverblue / Bazzite)
+        let ostree_has = |b: &str| matches!(b, "dnf" | "rpm-ostree");
+        let mut p = probe_with(&ostree_has, &none, &none);
+        p.ostree = true;
+        let err = missing_deps_message(&p).unwrap_err();
+        assert!(
+            err.contains("rpm-ostree install mpv yt-dlp pipewire-utils nodejs"),
+            "{err}"
+        );
+
+        // Debian / Ubuntu, Arch, openSUSE, Void, Alpine, Gentoo, Solus, NixOS
+        for (mgr, expected) in [
+            (
+                "apt",
+                "sudo apt update && sudo apt install mpv yt-dlp pipewire-bin nodejs",
+            ),
+            ("pacman", "sudo pacman -S mpv yt-dlp pipewire-audio nodejs"),
+            ("zypper", "sudo zypper install mpv yt-dlp pipewire-tools nodejs"),
+            ("xbps-install", "sudo xbps-install -S mpv yt-dlp pipewire nodejs"),
+            ("apk", "sudo apk add mpv yt-dlp pipewire-tools nodejs"),
+            (
+                "emerge",
+                "sudo emerge media-video/mpv net-misc/yt-dlp media-video/pipewire net-libs/nodejs",
+            ),
+            ("eopkg", "sudo eopkg install mpv yt-dlp pipewire nodejs"),
+            ("nix", "nix-shell -p mpv yt-dlp pipewire nodejs"),
+        ] {
+            let has = |b: &str| b == mgr;
+            let err = missing_deps_message(&probe_with(&has, &none, &none)).unwrap_err();
+            assert!(err.contains(expected), "{mgr}: {err}");
+        }
+
+        // Unknown distro fallback
+        let empty = |_: &str| false;
+        let fallback = missing_deps_message(&probe_with(&empty, &none, &none)).unwrap_err();
+        assert!(fallback.contains("sudo pacman -S") && fallback.contains("sudo apk add"));
     }
 
     #[test]
-    fn includes_missing_helpers_for_apt_and_fallback() {
-        let err = missing_deps_message(|b| b == "apt").unwrap_err();
-        assert!(err.contains("mpv and yt-dlp"));
-        assert!(err.contains("sudo apt install mpv yt-dlp pipewire-bin nodejs"));
-
-        let fallback = missing_deps_message(|_| false).unwrap_err();
-        assert!(fallback.contains("sudo pacman -S"));
+    fn catches_chmod_missing_path_and_flatpak_mpv() {
+        let has = |b: &str| b == "dnf";
+        let non_exec = |b: &str| (b == "yt-dlp").then(|| PathBuf::from("/home/u/.local/bin/yt-dlp"));
+        let local_bin = |b: &str| (b == "mpv").then(|| PathBuf::from("/home/u/.local/bin/mpv"));
+        let mut p = probe_with(&has, &non_exec, &local_bin);
+        p.flatpak_mpv = true;
+        let err = missing_deps_message(&p).unwrap_err();
+        assert!(err.contains("chmod +x /home/u/.local/bin/yt-dlp"), "{err}");
+        assert!(err.contains("~/.local/bin isn't in your PATH"), "{err}");
+        assert!(err.contains("Flatpak"), "{err}");
     }
 }
