@@ -197,8 +197,9 @@ lyrics, you get the cat. (See below. Be nice to the cat.)
 ### Like songs
 
 Press `f` to like or unlike what's playing. Songs you've already liked show a
-♥ everywhere: in Now Playing, the queue and search results. This needs you
-to sign in once (next section).
+♥ everywhere: in Now Playing, the queue and search results. `F` dislikes the
+song and skips it, which also steers your radio and autoplay away from it.
+This needs you to sign in once (next section).
 
 <p align="center"><img src="assets/gifs/like.gif" alt="pressing f to like Fine Again, a heart appears" width="900"></p>
 
@@ -209,6 +210,9 @@ to sign in once (next section).
 - **The Esc menu**: btop-style, with the pova logo drawn in block characters, for themes, the visualizer, autoplay and album art.
 - **Your library** (`b`): your playlists, liked songs and history once you're signed in.
 - **Your playlists** (`p`): add the song you're on to one of your playlists or a new one, take songs out with `d`, and delete a playlist with `D` (it asks first).
+- **Even loudness**: every song plays at about the same volume, so a quiet acoustic track doesn't follow a loud one at half the level. On by default; switch it in the `esc` menu.
+- **Song-change notifications**: a desktop popup with the cover art when the song changes. Off by default; turn it on in the `esc` menu.
+- **Up next**: Now Playing shows which song comes after this one.
 - **Picks up where you left off**: quit and come back to the same queue, paused at the same second.
 - **Control it from anywhere**: `pova next`, `pova add <song>`, `pova status` and more, for keyboard shortcuts and status bars. See [docs/remote-control.md](docs/remote-control.md).
 - **Mouse support**: click tabs, buttons, list rows, the progress bar and the volume bar, and scroll anywhere.

@@ -7,6 +7,7 @@ mod control;
 mod keymap;
 mod lyrics;
 mod model;
+mod notify;
 mod player;
 mod resolve;
 mod theme;
@@ -79,6 +80,8 @@ enum Remote {
     Prev,
     /// Like / unlike the current song.
     Like,
+    /// Dislike the current song and skip it.
+    Dislike,
     /// Set the volume: 40, +5 or -5.
     #[command(allow_hyphen_values = true)]
     Volume { amount: String },
@@ -118,6 +121,7 @@ impl Remote {
             Remote::Next => C::Next,
             Remote::Prev => C::Prev,
             Remote::Like => C::Like,
+            Remote::Dislike => C::Dislike,
             Remote::Volume { amount } => C::Volume(amount),
             Remote::Seek { amount } => C::Seek(amount),
             Remote::Add { query } => C::Add(query.join(" ")),
@@ -326,6 +330,7 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
         volume: state.volume.unwrap_or(cfg.volume).min(100),
         extra_args: cfg.mpv_args.clone(),
         client_name: client_name.clone(),
+        normalize: state.normalize_loudness.unwrap_or(cfg.normalize_loudness),
     };
     let player_task = tokio::spawn(mpv::run(mpv_cfg, player_cmd_rx, player_ev_tx));
 
@@ -386,17 +391,29 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
         Some(ThreadProtocol::new(cat_tx, Some(p.new_resize_protocol(img))))
     });
 
+    let (notify_tx, notify_rx) = unbounded_channel();
+    tokio::spawn(notify::run(
+        paths.cache_dir.join("art"),
+        paths.cache_dir.clone(),
+        notify_rx,
+    ));
+
     let channels = Channels {
         player: player_tx.clone(),
         ytm: ytm_tx,
         lyrics: lyrics_tx,
         art: art_tx,
         resolve: resolve_tx,
+        notify: notify_tx,
     };
     let mut app = App::new(cfg, paths, state, keymap, channels, picker, art_proto);
     app.cat_art = cat_proto;
     for w in key_warnings {
         app.flash(w, true);
+    }
+    if app.cfg.notifications && mpv::which("notify-send").is_none() {
+        app.cfg.notifications = false;
+        app.flash(notify::MISSING, true);
     }
     match cli.play {
         Some(q) => app.play_query(q),

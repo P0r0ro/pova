@@ -235,19 +235,31 @@ pub enum MenuItem {
     VizMode,
     Autoplay,
     AlbumArt,
+    Loudness,
+    Notifications,
     Help,
     Quit,
 }
 
 impl MenuItem {
-    pub const ALL: [MenuItem; 6] = [
+    pub const ALL: [MenuItem; 8] = [
         MenuItem::Themes,
         MenuItem::VizMode,
         MenuItem::Autoplay,
         MenuItem::AlbumArt,
+        MenuItem::Loudness,
+        MenuItem::Notifications,
         MenuItem::Help,
         MenuItem::Quit,
     ];
+
+    /// A setting that changes in place with enter / ← → (the menu stays open).
+    pub fn is_setting(self) -> bool {
+        matches!(
+            self,
+            MenuItem::VizMode | MenuItem::Autoplay | MenuItem::AlbumArt | MenuItem::Loudness | MenuItem::Notifications
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -354,6 +366,7 @@ pub struct Channels {
     pub lyrics: UnboundedSender<LyricsReq>,
     pub art: UnboundedSender<ArtReq>,
     pub resolve: UnboundedSender<ResolveReq>,
+    pub notify: UnboundedSender<crate::notify::Note>,
 }
 
 pub struct App {
@@ -420,6 +433,15 @@ pub struct App {
     consecutive_errors: usize,
     /// For the "track started in N ms" log line.
     start_timer: Option<(Instant, bool)>,
+    /// Video id of the last song-change notification (also set for a paused
+    /// resume, which shouldn't pop one up).
+    notified: Option<String>,
+    /// Disliked last song waiting for autoplay songs to skip to.
+    skip_disliked: Option<String>,
+    /// Even loudness / notifications as last picked in the Esc menu; None
+    /// until then, so config.toml keeps deciding.
+    picked_loudness: Option<bool>,
+    picked_notifications: Option<bool>,
 }
 
 impl App {
@@ -435,6 +457,8 @@ impl App {
         let mut cfg = cfg;
         cfg.autoplay = state.autoplay.unwrap_or(cfg.autoplay);
         cfg.album_art = state.album_art.unwrap_or(cfg.album_art);
+        cfg.normalize_loudness = state.normalize_loudness.unwrap_or(cfg.normalize_loudness);
+        cfg.notifications = state.notifications.unwrap_or(cfg.notifications);
         let theme_name = state.theme.clone().unwrap_or_else(|| cfg.theme.clone());
         let theme = theme::load_named(&paths.config_dir, &theme_name, cfg.theme_background);
         let volume = state.volume.unwrap_or(cfg.volume).min(100) as f64;
@@ -494,6 +518,10 @@ impl App {
             direct_failed: HashSet::new(),
             consecutive_errors: 0,
             start_timer: None,
+            notified: None,
+            skip_disliked: None,
+            picked_loudness: state.normalize_loudness,
+            picked_notifications: state.notifications,
             cfg,
             paths,
         }
@@ -537,10 +565,12 @@ impl App {
     pub fn menu_label(&self, item: MenuItem) -> String {
         let on_off = |b: bool| if b { "on" } else { "off" };
         match item {
-            MenuItem::Themes => format!("Theme        ‹ {} ›", self.theme.name),
-            MenuItem::VizMode => format!("Visualizer   ‹ {} ›", self.viz_mode.label()),
-            MenuItem::Autoplay => format!("Autoplay     ‹ {} ›", on_off(self.cfg.autoplay)),
-            MenuItem::AlbumArt => format!("Album art    ‹ {} ›", on_off(self.cfg.album_art)),
+            MenuItem::Themes => format!("Theme          ‹ {} ›", self.theme.name),
+            MenuItem::VizMode => format!("Visualizer     ‹ {} ›", self.viz_mode.label()),
+            MenuItem::Autoplay => format!("Autoplay       ‹ {} ›", on_off(self.cfg.autoplay)),
+            MenuItem::AlbumArt => format!("Album art      ‹ {} ›", on_off(self.cfg.album_art)),
+            MenuItem::Loudness => format!("Even loudness  ‹ {} ›", on_off(self.cfg.normalize_loudness)),
+            MenuItem::Notifications => format!("Notifications  ‹ {} ›", on_off(self.cfg.notifications)),
             MenuItem::Help => "Help".into(),
             MenuItem::Quit => "Quit".into(),
         }
@@ -551,6 +581,21 @@ impl App {
             MenuItem::Themes => self.open_themes(),
             MenuItem::Help => self.overlay = Some(Overlay::Help { scroll: 0 }),
             MenuItem::Quit => self.quit = true,
+            MenuItem::Loudness => {
+                self.cfg.normalize_loudness = !self.cfg.normalize_loudness;
+                self.picked_loudness = Some(self.cfg.normalize_loudness);
+                self.player(PlayerCmd::SetNormalize(self.cfg.normalize_loudness));
+                self.save_state();
+            }
+            MenuItem::Notifications => {
+                if !self.cfg.notifications && crate::player::mpv::which("notify-send").is_none() {
+                    self.flash(crate::notify::MISSING, true);
+                    return;
+                }
+                self.cfg.notifications = !self.cfg.notifications;
+                self.picked_notifications = Some(self.cfg.notifications);
+                self.save_state();
+            }
             MenuItem::VizMode => {
                 self.viz_mode = if forward {
                     self.viz_mode.next()
@@ -632,6 +677,8 @@ impl App {
             show_controls: Some(self.show_controls),
             autoplay: Some(self.cfg.autoplay),
             album_art: Some(self.cfg.album_art),
+            normalize_loudness: self.picked_loudness,
+            notifications: self.picked_notifications,
         }
         .save(&self.paths.state_file());
     }
@@ -681,6 +728,10 @@ impl App {
         let Some(track) = self.queue.get(i).cloned() else {
             return;
         };
+        if paused {
+            // Resumed paused: nothing new is playing yet, so no popup.
+            self.notified = Some(track.video_id.clone());
+        }
         if let Some(err) = self.player.error.clone() {
             self.load_started = None;
             self.player.time = 0.0;
@@ -845,6 +896,63 @@ impl App {
         }
         self.request_art();
         self.maybe_autoplay();
+        self.notify_song();
+    }
+
+    /// Thumbs-down the current song and move on, like YouTube Music does.
+    /// The rating is sent right away; skipping doesn't wait for the answer.
+    fn dislike(&mut self) {
+        let Some(t) = self.current() else { return };
+        if !self.logged_in {
+            self.flash(
+                "Disliking songs needs you to be signed in. Run `pova-import-cookie chrome` \
+                 (or firefox) in another terminal; pova signs in by itself once it's saved.",
+                true,
+            );
+            return;
+        }
+        let video_id = t.video_id.clone();
+        let _ = self.tx.ytm.send(YtmReq::Dislike {
+            video_id: video_id.clone(),
+        });
+        self.consecutive_errors = 0;
+        // A one-song queue on repeat-all "skips" to itself: treat as the end.
+        match self.queue.skip_index().filter(|&i| Some(i) != self.queue.current) {
+            Some(i) => {
+                self.play_index(i);
+                self.flash("Disliked · skipped", false);
+            }
+            None => {
+                // Nothing to skip to: stop the disliked song rather than let it play on.
+                if !self.player.paused {
+                    self.player(PlayerCmd::TogglePause);
+                }
+                if self.cfg.autoplay && self.queue.repeat == Repeat::Off {
+                    // Play the first autoplay song as soon as it arrives.
+                    self.skip_disliked = Some(video_id.clone());
+                    self.maybe_autoplay();
+                    self.flash("Disliked · loading more songs…", false);
+                } else {
+                    self.flash("Disliked · end of queue", false);
+                }
+            }
+        }
+    }
+
+    /// Desktop notification for the song that just started (if turned on).
+    fn notify_song(&mut self) {
+        let Some(track) = self.current() else { return };
+        if !self.cfg.notifications || self.notified.as_deref() == Some(&track.video_id) {
+            return;
+        }
+        let note = crate::notify::Note {
+            title: track.title.clone(),
+            artist: track.artists.clone(),
+            album: track.album.clone(),
+            art_url: Some(track.art_url()),
+        };
+        self.notified = Some(track.video_id.clone());
+        let _ = self.tx.notify.send(note);
     }
 
     /// Fetch album art for the current track (if enabled and not shown yet).
@@ -1167,7 +1275,10 @@ impl App {
                         if fresh.is_empty() {
                             return;
                         }
-                        let at_end = self.player.idle && self.load_started.is_none();
+                        let disliked = self.skip_disliked.take();
+                        let skip =
+                            disliked.is_some() && disliked.as_deref() == self.current().map(|t| t.video_id.as_str());
+                        let at_end = skip || (self.player.idle && self.load_started.is_none());
                         let resume = self.queue.current.map(|c| c + 1);
                         self.queue.append(fresh);
                         if at_end {
@@ -1251,6 +1362,15 @@ impl App {
                     }
                 }
                 self.flash(if liked { "♥ Liked" } else { "Removed like" }, false);
+            }
+            YtmEvent::Disliked { video_id } => {
+                self.likes.insert(video_id.clone(), false);
+                for e in &mut self.queue.entries {
+                    if e.track.video_id == video_id {
+                        e.track.liked = Some(false);
+                    }
+                }
+                self.dirty = true;
             }
             YtmEvent::Lyrics { video_id, text } => {
                 if let LyricsState::Loading { video_id: v, .. } = &self.lyrics
@@ -1460,6 +1580,16 @@ impl App {
                     return "error nothing is playing".into();
                 }
                 self.dispatch(Action::Like);
+                "ok".into()
+            }
+            C::Dislike => {
+                if !self.logged_in {
+                    return "error disliking songs needs you to be signed in (pova-import-cookie chrome)".into();
+                }
+                if !has_track {
+                    return "error nothing is playing".into();
+                }
+                self.dispatch(Action::Dislike);
                 "ok".into()
             }
             C::Volume(arg) => {
@@ -1876,6 +2006,7 @@ impl App {
                     liked,
                 });
             }
+            Dislike => self.dislike(),
             VizMode => {
                 self.viz_mode = self.viz_mode.next();
                 self.flash(format!("Visualizer: {}", self.viz_mode.label()), false);
@@ -2437,13 +2568,13 @@ impl App {
                 }
             }
             Overlay::Menu { state } => {
-                let len = MenuItem::ALL.len();
-                let cur = state.selected().unwrap_or(0);
-                let item = MenuItem::ALL[cur.min(len - 1)];
-                let is_setting = matches!(item, MenuItem::VizMode | MenuItem::Autoplay | MenuItem::AlbumArt);
+                let items = &MenuItem::ALL;
+                let len = items.len();
+                let cur = state.selected().unwrap_or(0).min(len - 1);
+                let item = items[cur];
                 match (k.code, action) {
                     // Settings toggle in place (menu stays open, like btop's options).
-                    (KeyCode::Enter | KeyCode::Left | KeyCode::Right, _) if is_setting => {
+                    (KeyCode::Enter | KeyCode::Left | KeyCode::Right, _) if item.is_setting() => {
                         self.activate_menu(item, k.code != KeyCode::Left);
                     }
                     (KeyCode::Enter, _) | (_, Some(Action::Select)) => {
@@ -2684,6 +2815,7 @@ mod search_tests {
                 lyrics: l,
                 art: a,
                 resolve: unbounded_channel().0,
+                notify: unbounded_channel().0,
             },
             None,
             None,
@@ -2799,6 +2931,55 @@ mod search_tests {
     }
 
     #[test]
+    fn dislike_rates_and_skips_and_needs_sign_in() {
+        // Signed out: nothing is sent, and the error says what to do.
+        let (mut app, mut rx) = app();
+        app.queue.replace(vec![track("a"), track("b")], 0);
+        app.dispatch(Action::Dislike);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(app.queue.current, Some(0));
+        assert!(
+            app.flash
+                .as_ref()
+                .is_some_and(|f| f.error && f.text.contains("pova-import-cookie"))
+        );
+
+        let (mut app, mut rx) = signed_in(&["a"]);
+        app.queue.replace(vec![track("a"), track("b"), track("c")], 0);
+        app.dispatch(Action::Dislike);
+        assert!(matches!(rx.try_recv(), Ok(YtmReq::Dislike { video_id }) if video_id == "a"));
+        assert_eq!(app.queue.current, Some(1), "skips to the next song");
+        app.on_ytm(YtmEvent::Disliked { video_id: "a".into() });
+        assert!(!is_liked(&app.likes, &track("a")), "a dislike replaces the like");
+        assert_eq!(app.queue.get(0).unwrap().liked, Some(false));
+    }
+
+    #[test]
+    fn dislike_on_last_song_plays_autoplay_songs_when_they_arrive() {
+        let (mut app, mut rx) = signed_in(&[]);
+        app.queue.replace(vec![track("a")], 0);
+        app.play_index(0); // requests the autoplay radio for "a"
+        while rx.try_recv().is_ok() {}
+        app.dispatch(Action::Dislike);
+        assert_eq!(app.queue.current, Some(0), "nothing to skip to yet");
+        app.on_ytm(YtmEvent::Radio {
+            seed: "a".into(),
+            tracks: vec![track("a"), track("b")],
+        });
+        assert_eq!(app.queue.current, Some(1), "skips once autoplay songs arrive");
+    }
+
+    #[test]
+    fn dislike_on_single_song_repeat_all_does_not_replay_it() {
+        let (mut app, _rx) = signed_in(&[]);
+        app.cfg.autoplay = false;
+        app.queue.replace(vec![track("a")], 0);
+        app.queue.repeat = Repeat::All;
+        app.dispatch(Action::Dislike);
+        assert!(app.flash.as_ref().is_some_and(|f| f.text.contains("end of queue")));
+    }
+
+    #[test]
     fn already_liked_song_is_unliked_not_liked_again() {
         let (mut app, mut rx) = signed_in(&["a"]);
         // Search results carry no like status (liked: None).
@@ -2878,6 +3059,7 @@ mod resolve_tests {
             lyrics: unbounded_channel().0,
             art: unbounded_channel().0,
             resolve: r,
+            notify: unbounded_channel().0,
         };
         let app = App::new(Config::default(), paths, State::default(), keymap, channels, None, None);
         Harness {
@@ -3047,6 +3229,61 @@ mod resolve_tests {
         h.app
             .on_terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
         assert!(matches!(h.app.overlay, Some(Overlay::Themes { .. })));
+    }
+
+    #[test]
+    fn menu_toggles_loudness_live() {
+        let mut h = harness();
+        h.app.dispatch(Action::Menu);
+        let at = MenuItem::ALL.iter().position(|i| *i == MenuItem::Loudness).unwrap();
+        assert_eq!(MenuItem::ALL[at - 1], MenuItem::AlbumArt, "sits under album art");
+        if let Some(Overlay::Menu { state }) = h.app.overlay.as_mut() {
+            state.select(Some(at));
+        }
+        assert!(h.app.cfg.normalize_loudness);
+        drain(&mut h.player);
+        h.app
+            .on_terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+        assert!(!h.app.cfg.normalize_loudness);
+        assert!(matches!(h.app.overlay, Some(Overlay::Menu { .. })), "menu stays open");
+        assert!(
+            drain(&mut h.player)
+                .iter()
+                .any(|c| matches!(c, PlayerCmd::SetNormalize(false)))
+        );
+        assert_eq!(State::load(&h.app.paths.state_file()).normalize_loudness, Some(false));
+    }
+
+    #[test]
+    fn song_change_notifies_once_but_not_on_paused_resume() {
+        let (n, mut nrx) = unbounded_channel();
+        let (keymap, _) = Keymap::new(&Default::default());
+        let channels = Channels {
+            player: unbounded_channel().0,
+            ytm: unbounded_channel().0,
+            lyrics: unbounded_channel().0,
+            art: unbounded_channel().0,
+            resolve: unbounded_channel().0,
+            notify: n,
+        };
+        let cfg = Config {
+            notifications: true,
+            resume: false,
+            ..Config::default()
+        };
+        let mut app = App::new(cfg, test_paths(), State::default(), keymap, channels, None, None);
+        app.queue.replace(vec![track("a"), track("b"), track("c")], 0);
+        app.load_index(1, Some(30.0), true);
+        assert!(nrx.try_recv().is_err(), "resuming paused isn't a song change");
+        app.play_index(0);
+        let note = nrx.try_recv().expect("notification");
+        assert_eq!(note.title, "a");
+        assert!(note.art_url.is_some());
+        app.on_track_changed();
+        assert!(nrx.try_recv().is_err(), "same song, no second popup");
+        app.cfg.notifications = false;
+        app.play_index(2);
+        assert!(nrx.try_recv().is_err());
     }
 
     #[test]
@@ -3346,6 +3583,7 @@ mod playlist_tests {
             lyrics: unbounded_channel().0,
             art: unbounded_channel().0,
             resolve: unbounded_channel().0,
+            notify: unbounded_channel().0,
         };
         let cfg = Config {
             resume: false,

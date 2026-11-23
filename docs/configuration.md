@@ -12,6 +12,8 @@ album_art = true
 image_protocol = "auto"    # auto | kitty | sixel | iterm2 | halfblocks
 mpv_args = []              # extra flags for mpv, if you want them
 resume = true              # start where you left off: same queue, same spot, paused
+normalize_loudness = true  # play every song at the same loudness
+notifications = false      # desktop popup with the cover art when the song changes
 
 [viz]
 mode = "bars"              # bars | mirror | mono | wave
@@ -30,6 +32,17 @@ next = ["N", "ctrl+right"]
 
 pova remembers your last theme, volume, visualizer mode, box layout and menu
 settings in `~/.local/state/pova/state.toml`.
+
+**Even loudness and notifications** can also be switched in pova's `esc`
+menu. What you pick there wins over `config.toml`.
+
+- `normalize_loudness` runs mpv's loudness filter (EBU R128, aiming at the
+  -14 LUFS YouTube itself uses), so a quiet acoustic song and a loud master
+  play at about the same volume. If you set your own audio filter with
+  `--af=` in `mpv_args`, that replaces pova's.
+- `notifications` needs `notify-send` (the `libnotify` package; `libnotify-bin`
+  on Debian and Ubuntu). Each new song replaces the previous popup, so they
+  don't pile up.
 
 **Themes** are looked up in `~/.config/pova/themes/`, `~/.config/btop/themes/`
 and `/usr/share/btop/themes/`. Run `pova --list-themes` to see what you have.

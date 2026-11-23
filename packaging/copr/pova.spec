@@ -24,6 +24,7 @@ Recommends:     nodejs
 Recommends:     python3
 Recommends:     mpv-mpris
 Recommends:     btop
+Recommends:     libnotify
 
 %description
 pova plays YouTube Music in the terminal with a btop-style layout, a

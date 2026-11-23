@@ -13,6 +13,7 @@ including any keys you've remapped.
 | `+` `-` `m` | volume, mute | `enter` | play or open the selection |
 | `S` `R` | shuffle, repeat (off / all / one) | `a` / `A` | add to queue / play next |
 | `f` | like or unlike the current song | `r` | start a radio from the selection |
+| `F` | dislike the current song and skip it | | |
 | `p` | add the selected (or playing) song to one of your playlists, or a new one | `d` in Library | remove the selected song from your open playlist |
 | `D` in Library | delete the selected or open playlist (asks yes / no first, starts on no) | | |
 | `v` | change visualizer mode | `d`, `J` `K`, `C` | queue: remove, move, clear |
@@ -28,7 +29,8 @@ word before the cursor and `ctrl+u` everything before it.
 **The Esc menu.** Like btop, pressing `esc` when there's nothing to go back
 from opens a menu with the pova logo drawn in block characters, in the logo's
 own violet-to-pink gradient. From it you pick a theme, change the visualizer
-mode, and turn autoplay and album art on and off. Your choices are saved.
+mode, and turn autoplay, album art, even loudness and song-change
+notifications on and off. Your choices are saved.
 
 The mouse works too: click tabs, buttons, list rows and the progress bar, and
 scroll through lists. Click or scroll the volume bar to set the volume, click

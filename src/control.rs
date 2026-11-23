@@ -23,6 +23,7 @@ pub enum Command {
     Next,
     Prev,
     Like,
+    Dislike,
     /// "+5", "-5" or an absolute "40".
     Volume(String),
     /// "+10", "-10" or an absolute "90" (seconds).
@@ -61,6 +62,7 @@ impl Command {
             "next" => Command::Next,
             "prev" => Command::Prev,
             "like" => Command::Like,
+            "dislike" => Command::Dislike,
             "volume" => Command::Volume(need("a volume like 40, +5 or -5")?),
             "seek" => Command::Seek(need("seconds like 90, +10 or -10")?),
             "add" => Command::Add(need("a search query")?),
@@ -80,6 +82,7 @@ impl Command {
             Command::Next => "next".into(),
             Command::Prev => "prev".into(),
             Command::Like => "like".into(),
+            Command::Dislike => "dislike".into(),
             Command::Volume(v) => format!("volume\t{v}"),
             Command::Seek(s) => format!("seek\t{s}"),
             Command::Add(q) => format!("add\t{q}"),

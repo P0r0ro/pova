@@ -36,6 +36,8 @@ pub enum PlayerCmd {
     SetMute(bool),
     /// Loop the current file forever (repeat-one).
     SetLoopFile(bool),
+    /// Even out loudness between songs (adds / removes [`NORMALIZE_FILTER`]).
+    SetNormalize(bool),
     Stop,
     Quit,
 }
@@ -68,6 +70,21 @@ pub struct MpvConfig {
     pub extra_args: Vec<String>,
     /// `--audio-client-name`, unique per pova instance (see [`audio_client_name`]).
     pub client_name: String,
+    /// Start with [`NORMALIZE_FILTER`] on.
+    pub normalize: bool,
+}
+
+/// Label of pova's loudness filter in mpv's `af` chain, so it can be removed
+/// again without touching filters from the user's `mpv_args`.
+const NORMALIZE_LABEL: &str = "@povanorm";
+
+/// EBU R128 loudness normalization to -14 LUFS (YouTube's own reference
+/// level), with a true-peak ceiling so loud masters don't clip. loudnorm
+/// outputs 192 kHz in this mode, so resample back to a normal rate.
+pub const NORMALIZE_FILTER: &str = "lavfi=[loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000]";
+
+fn normalize_filter() -> String {
+    format!("{NORMALIZE_LABEL}:{NORMALIZE_FILTER}")
 }
 
 const OBSERVED: &[&str] = &[
@@ -98,6 +115,9 @@ fn spawn_mpv(cfg: &MpvConfig) -> anyhow::Result<Child> {
         .arg("--cache=yes")
         .arg("--ytdl-format=bestaudio/best")
         .arg("--keep-open=no");
+    if cfg.normalize {
+        cmd.arg(format!("--af-append={}", normalize_filter()));
+    }
     // yt-dlp needs a JS runtime for YouTube's signature challenges; it only
     // enables deno by default, so point it at node when that is all we have.
     if which("deno").is_none() && which("node").is_some() {
@@ -234,6 +254,13 @@ async fn run_inner(
                     PlayerCmd::SetMute(m) => send(&mut write, json!(["set_property", "mute", m])).await?,
                     PlayerCmd::SetLoopFile(on) => {
                         send(&mut write, json!(["set_property", "loop-file", if on { "inf" } else { "no" }])).await?
+                    }
+                    PlayerCmd::SetNormalize(on) => {
+                        if on {
+                            send(&mut write, json!(["af", "add", normalize_filter()])).await?
+                        } else {
+                            send(&mut write, json!(["af", "remove", NORMALIZE_LABEL])).await?
+                        }
                     }
                     PlayerCmd::Stop => send(&mut write, json!(["stop"])).await?,
                     PlayerCmd::Quit => {
