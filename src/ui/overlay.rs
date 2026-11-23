@@ -250,9 +250,13 @@ fn draw_menu(f: &mut Frame, app: &mut App, area: Rect, selected: usize) {
     f.render_widget(Block::new().style(Style::new().bg(t.main_bg)), r);
 
     let mut y = r.y + 1;
+    let bottom = r.y + r.height;
     if !logo.is_empty() {
         let x = r.x + (r.width.saturating_sub(logo_w)) / 2;
         for line in logo {
+            if y >= bottom {
+                break;
+            }
             f.render_widget(Paragraph::new(line), Rect::new(x, y, logo_w.min(r.width), 1));
             y += 1;
         }
@@ -260,6 +264,9 @@ fn draw_menu(f: &mut Frame, app: &mut App, area: Rect, selected: usize) {
     y += 1;
     let accent = banner::gradient(0.5);
     for (i, label) in items.iter().enumerate() {
+        if y >= bottom {
+            break;
+        }
         let row = Rect::new(r.x + (r.width.saturating_sub(items_w)) / 2, y, items_w.min(r.width), 1);
         let style = if i == selected {
             Style::new()
@@ -274,10 +281,12 @@ fn draw_menu(f: &mut Frame, app: &mut App, area: Rect, selected: usize) {
         y += 1;
     }
     let hint = "↑↓ select · enter/←→ change · esc close";
-    f.render_widget(
-        Paragraph::new(hint)
-            .alignment(Alignment::Center)
-            .style(Style::new().fg(t.inactive_fg)),
-        Rect::new(r.x, y + 1, r.width, 1),
-    );
+    if y + 1 < bottom {
+        f.render_widget(
+            Paragraph::new(hint)
+                .alignment(Alignment::Center)
+                .style(Style::new().fg(t.inactive_fg)),
+            Rect::new(r.x, y + 1, r.width, 1),
+        );
+    }
 }

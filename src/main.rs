@@ -158,6 +158,11 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if let Err(msg) = check_runtime_deps() {
+        eprint!("{msg}");
+        std::process::exit(1);
+    }
+
     // Logs go to a file only; the TUI owns the terminal.
     let appender = tracing_appender::rolling::never(&paths.cache_dir, "pova.log");
     let (writer, _log_guard) = tracing_appender::non_blocking(appender);
@@ -475,4 +480,89 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
     restore_terminal(enhanced);
     tracing::info!("bye");
     result
+}
+
+/// Verify playback-critical helpers (`mpv`, `yt-dlp`) exist on PATH before
+/// entering the TUI. Returns a message with a distro-appropriate install
+/// command when something is missing.
+fn check_runtime_deps() -> Result<(), String> {
+    missing_deps_message(|bin| mpv::which(bin).is_some())
+}
+
+fn missing_deps_message(has: impl Fn(&str) -> bool) -> Result<(), String> {
+    let mut missing = Vec::new();
+    if !has("mpv") {
+        missing.push("mpv");
+    }
+    if !has("yt-dlp") {
+        missing.push("yt-dlp");
+    }
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    let missing_pw = !has("pw-record") || !has("pw-dump");
+    let missing_js = !has("node") && !has("deno");
+    let what = missing.join(" and ");
+    let verb = if missing.len() == 1 { "it isn't" } else { "they aren't" };
+    let mut msg = format!("pova needs {what} to play music, but {verb} installed.\n");
+
+    let pm = if has("dnf") {
+        Some(("sudo dnf install", "pipewire-utils"))
+    } else if has("apt-get") || has("apt") {
+        Some(("sudo apt install", "pipewire-bin"))
+    } else if has("pacman") {
+        Some(("sudo pacman -S", "pipewire-audio"))
+    } else if has("zypper") {
+        Some(("sudo zypper install", "pipewire-tools"))
+    } else {
+        None
+    };
+
+    if let Some((install, pw_pkg)) = pm {
+        let mut pkgs: Vec<&str> = missing;
+        if missing_pw {
+            pkgs.push(pw_pkg);
+        }
+        if missing_js {
+            pkgs.push("nodejs");
+        }
+        msg.push_str(&format!("\nInstall with:\n  {install} {}\n", pkgs.join(" ")));
+    } else {
+        msg.push_str(
+            "\nInstall the helpers for your distro:\n  \
+             sudo dnf install mpv yt-dlp pipewire-utils nodejs   # Fedora\n  \
+             sudo apt install mpv yt-dlp pipewire-bin nodejs     # Debian / Ubuntu\n  \
+             sudo pacman -S mpv yt-dlp pipewire-audio nodejs     # Arch\n",
+        );
+    }
+    Err(msg)
+}
+
+#[cfg(test)]
+mod dep_tests {
+    use super::missing_deps_message;
+
+    #[test]
+    fn ok_when_mpv_and_ytdlp_present() {
+        assert_eq!(missing_deps_message(|b| matches!(b, "mpv" | "yt-dlp")), Ok(()));
+    }
+
+    #[test]
+    fn suggests_exact_dnf_command_when_only_mpv_missing() {
+        let err =
+            missing_deps_message(|b| matches!(b, "yt-dlp" | "pw-record" | "pw-dump" | "node" | "dnf")).unwrap_err();
+        assert!(err.contains("pova needs mpv to play music"));
+        assert!(err.contains("sudo dnf install mpv\n"));
+    }
+
+    #[test]
+    fn includes_missing_helpers_for_apt_and_fallback() {
+        let err = missing_deps_message(|b| b == "apt").unwrap_err();
+        assert!(err.contains("mpv and yt-dlp"));
+        assert!(err.contains("sudo apt install mpv yt-dlp pipewire-bin nodejs"));
+
+        let fallback = missing_deps_message(|_| false).unwrap_err();
+        assert!(fallback.contains("sudo pacman -S"));
+    }
 }

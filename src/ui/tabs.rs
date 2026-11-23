@@ -147,20 +147,24 @@ pub fn now_playing(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Progress bar (clickable).
     if y < bottom {
-        let w = area.width.saturating_sub(4).max(2);
-        let frac = if app.player.duration > 0.0 {
-            app.player.time / app.player.duration
-        } else {
-            0.0
-        };
-        let r = Rect::new(area.x + 2, y, w, 1);
-        f.render_widget(Paragraph::new(Line::from(progress_spans(&t, w, frac))), r);
-        app.hits.add(r, Hit::Progress);
+        let w = area.width.saturating_sub(4);
+        if w >= 2 {
+            let frac = if app.player.duration > 0.0 {
+                app.player.time / app.player.duration
+            } else {
+                0.0
+            };
+            let r = Rect::new(area.x + 2, y, w, 1);
+            f.render_widget(Paragraph::new(Line::from(progress_spans(&t, w, frac))), r);
+            app.hits.add(r, Hit::Progress);
+        }
     }
     y += 1;
     if y < bottom {
         let r = Rect::new(area.x + 2, y, area.width.saturating_sub(4), 1);
-        let status = if app.player.buffering || (app.player.idle && app.current().is_some() && !app.player.paused) {
+        let status = if app.player.error.is_some() {
+            "mpv unavailable".into()
+        } else if app.player.buffering || (app.player.idle && app.current().is_some() && !app.player.paused) {
             format!("{} loading", spinner())
         } else if app.player.paused {
             "paused".into()
@@ -575,7 +579,7 @@ fn suggestions_dropdown(f: &mut Frame, app: &mut App, below: Rect) {
         );
     let inner = block.inner(r);
     f.render_widget(block, r);
-    let typed = app.search.input.trim().to_lowercase();
+    let typed = app.search.input.trim();
     for (i, sugg) in list.iter().take(rows as usize).enumerate() {
         let y = inner.y + i as u16;
         let row = Rect { y, height: 1, ..inner };
@@ -586,11 +590,7 @@ fn suggestions_dropdown(f: &mut Frame, app: &mut App, below: Rect) {
             Style::new().fg(t.main_fg)
         };
         // Like YTM: the typed part plain, the completion bold.
-        let split = if sugg.text.to_lowercase().starts_with(&typed) && sugg.text.is_char_boundary(typed.len()) {
-            typed.len()
-        } else {
-            0
-        };
+        let split = crate::app::case_insensitive_prefix_len(&sugg.text, typed).unwrap_or(0);
         let (head, tail) = sugg.text.split_at(split);
         let icon = if sugg.history { "↺ " } else { "⌕ " };
         let spans = vec![

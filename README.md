@@ -255,7 +255,8 @@ obscure uploads and "Me at the zoo".
 - [docs/signing-in.md](docs/signing-in.md): signing in, step by step
 - [docs/remote-control.md](docs/remote-control.md): `pova next`, `pova add`, `pova status` for shortcuts and status bars
 - [docs/how-it-works.md](docs/how-it-works.md): how pova works inside, and its known limits
-- [docs/development.md](docs/development.md): building, tests, contributing
+- [docs/development.md](docs/development.md): building, tests, CI and releasing
+- [CONTRIBUTING.md](CONTRIBUTING.md): how to send a change
 
 ## Credits
 

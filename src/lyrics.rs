@@ -94,19 +94,24 @@ async fn fetch(http: &reqwest::Client, req: &LyricsReq) -> anyhow::Result<Option
         .send()
         .await?
         .error_for_status()?;
-    let mut recs: Vec<LrcLibRecord> = resp.json().await?;
-    let dist = |r: &LrcLibRecord| match (r.duration, req.duration) {
-        (Some(a), Some(b)) => (a - b).abs(),
-        _ => 30.0,
+    let recs: Vec<LrcLibRecord> = resp.json().await?;
+    Ok(pick_best_record(recs, req.duration))
+}
+
+fn pick_best_record(mut recs: Vec<LrcLibRecord>, target_duration: Option<f64>) -> Option<Lyrics> {
+    let dist = |r: &LrcLibRecord| match (r.duration, target_duration) {
+        (Some(a), Some(b)) => Some((a - b).abs()),
+        _ => None,
     };
-    recs.retain(|r| dist(r) <= 15.0);
+    // Only reject by duration when both sides actually reported one (artist top
+    // songs, for instance, omit duration).
+    recs.retain(|r| dist(r).is_none_or(|d| d <= 15.0));
     recs.sort_by(|a, b| {
         let synced = |r: &LrcLibRecord| r.synced_lyrics.as_ref().is_none_or(|s| s.trim().is_empty());
-        (synced(a), dist(a))
-            .partial_cmp(&(synced(b), dist(b)))
-            .unwrap_or(std::cmp::Ordering::Equal)
+        let key = |r: &LrcLibRecord| (synced(r), dist(r).unwrap_or(30.0));
+        key(a).partial_cmp(&key(b)).unwrap_or(std::cmp::Ordering::Equal)
     });
-    Ok(recs.into_iter().find_map(to_lyrics))
+    recs.into_iter().find_map(to_lyrics)
 }
 
 fn to_lyrics(rec: LrcLibRecord) -> Option<Lyrics> {
@@ -176,22 +181,36 @@ pub fn clean_title(title: &str) -> String {
         "hd",
         "4k",
         "remaster",
+        "remastered",
     ];
     let mut out = String::new();
     let mut chars = title.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '(' || c == '[' {
             let close = if c == '(' { ')' } else { ']' };
-            let inner: String = chars.by_ref().take_while(|&x| x != close).collect();
-            let lower = inner.to_lowercase();
-            if !NOISE.iter().any(|n| {
-                lower
-                    .split_whitespace()
-                    .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == *n)
-            }) {
+            let mut inner = String::new();
+            let mut closed = false;
+            for x in chars.by_ref() {
+                if x == close {
+                    closed = true;
+                    break;
+                }
+                inner.push(x);
+            }
+            if !closed {
                 out.push(c);
                 out.push_str(&inner);
-                out.push(close);
+            } else {
+                let lower = inner.to_lowercase();
+                if !NOISE.iter().any(|n| {
+                    lower
+                        .split_whitespace()
+                        .any(|w| w.trim_matches(|c: char| !c.is_alphanumeric()) == *n)
+                }) {
+                    out.push(c);
+                    out.push_str(&inner);
+                    out.push(close);
+                }
             }
         } else {
             out.push(c);
@@ -240,7 +259,9 @@ mod tests {
     #[test]
     fn title_cleanup() {
         assert_eq!(clean_title("Get Lucky (Official Video) [HD]"), "Get Lucky");
+        assert_eq!(clean_title("Bohemian Rhapsody (Remastered 2011)"), "Bohemian Rhapsody");
         assert_eq!(clean_title("Song (feat. X)"), "Song (feat. X)");
+        assert_eq!(clean_title("Song (Unclosed"), "Song (Unclosed");
         assert_eq!(
             strip_artist_prefix(&clean_title("Daft Punk - One More Time (Official Audio)"), "Daft Punk"),
             "One More Time"
@@ -248,5 +269,36 @@ mod tests {
         assert_eq!(strip_artist_prefix("Song - Remastered", "Someone"), "Song - Remastered");
         assert_eq!(primary_artist("Daft Punk, Pharrell Williams"), "Daft Punk");
         assert_eq!(primary_artist("Rick Astley - Topic"), "Rick Astley");
+    }
+
+    #[test]
+    fn fuzzy_search_keeps_results_without_duration() {
+        let recs = vec![
+            LrcLibRecord {
+                duration: Some(210.0),
+                instrumental: false,
+                plain_lyrics: Some("plain".into()),
+                synced_lyrics: None,
+            },
+            LrcLibRecord {
+                duration: Some(212.0),
+                instrumental: false,
+                plain_lyrics: None,
+                synced_lyrics: Some("[00:01.00]synced".into()),
+            },
+        ];
+        // Unknown track duration must not discard every LRCLIB search hit.
+        assert_eq!(
+            pick_best_record(recs, None),
+            Some(Lyrics::Synced(vec![(1.0, "synced".into())]))
+        );
+
+        let far = vec![LrcLibRecord {
+            duration: Some(300.0),
+            instrumental: false,
+            plain_lyrics: Some("wrong version".into()),
+            synced_lyrics: None,
+        }];
+        assert_eq!(pick_best_record(far, Some(200.0)), None);
     }
 }

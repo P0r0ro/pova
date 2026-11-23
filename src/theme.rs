@@ -98,7 +98,14 @@ pub fn parse_theme_file(contents: &str) -> HashMap<String, Rgb> {
         let Some(close) = line.find(']') else { continue };
         let key = line[6..close].trim().to_string();
         let Some(eq) = line[close..].find('=') else { continue };
-        let value = line[close + eq + 1..].trim().trim_matches(|c| c == '"' || c == '\'');
+        let raw = line[close + eq + 1..].trim();
+        let value = if let Some(rest) = raw.strip_prefix('"') {
+            rest.split_once('"').map_or(rest, |(v, _)| v)
+        } else if let Some(rest) = raw.strip_prefix('\'') {
+            rest.split_once('\'').map_or(rest, |(v, _)| v)
+        } else {
+            raw.split_once(" #").map_or(raw, |(v, _)| v).trim()
+        };
         if let Some(color) = parse_color(value) {
             map.insert(key, color);
         }
@@ -147,7 +154,7 @@ impl Theme {
         let viz = [
             first(&["viz_start", "cpu_start"]).or_else(|| get("cpu_start")),
             first(&["viz_mid", "cpu_mid"]).or_else(|| {
-                if user.contains_key("cpu_start") {
+                if user.contains_key("viz_start") || user.contains_key("cpu_start") {
                     None
                 } else {
                     get("cpu_mid")
@@ -158,7 +165,7 @@ impl Theme {
         let progress = [
             first(&["progress_start", "download_start", "proc_misc"]).or_else(|| get("download_start")),
             first(&["progress_mid", "download_mid"]).or_else(|| {
-                if user.contains_key("download_start") {
+                if user.contains_key("progress_start") || user.contains_key("download_start") {
                     None
                 } else {
                     get("download_mid")
@@ -283,9 +290,17 @@ mod tests {
 
     #[test]
     fn parses_theme_lines() {
-        let m = parse_theme_file("# c\ntheme[main_bg]=\"#282a36\"\ntheme[ title ] = \"#f8f8f2\"\njunk\n");
+        let m =
+            parse_theme_file("# c\ntheme[main_bg]=\"#282a36\" # inline comment\ntheme[ title ] = \"#f8f8f2\"\njunk\n");
         assert_eq!(m.get("main_bg"), Some(&Some((0x28, 0x2a, 0x36))));
         assert_eq!(m.get("title"), Some(&Some((0xf8, 0xf8, 0xf2))));
+    }
+
+    #[test]
+    fn custom_two_stop_pova_gradient_ignores_default_mid() {
+        let m = parse_theme_file("theme[viz_start]=\"#000000\"\ntheme[viz_end]=\"#ffffff\"\n");
+        let t = Theme::from_map("custom", &m, true);
+        assert_eq!(t.viz_color(0.5), Color::Rgb(0x80, 0x80, 0x80));
     }
 
     #[test]

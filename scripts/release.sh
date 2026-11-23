@@ -45,11 +45,13 @@ bump() {
   sed -i "/^%changelog/a * $stamp P0r0ro <250746769+P0r0ro@users.noreply.github.com> - $new-1\n- pova $new\n" "$spec"
   sed -i "s/^pkgver=.*/pkgver=$new/; s/^pkgrel=.*/pkgrel=1/" "$aur/PKGBUILD"
   sed -i "s/$o/$new/g; s/pkgrel = .*/pkgrel = 1/" "$aur/.SRCINFO"
-  echo "Bumped $old -> $new. Next:"
-  echo "  1. add a CHANGELOG.md entry, commit, push"
-  echo "  2. git tag v$new && git push origin v$new   (CI builds .rpm .deb AppImage tarball)"
-  echo "  3. cargo publish                               (crates.io, unless CI has the token)"
-  echo "  4. scripts/release.sh aur, commit, push        (AUR checksums)"
+  echo "Bumped $old -> $new. Next (main is protected, so through PRs):"
+  echo "  1. add a CHANGELOG.md entry, commit on a branch, open a PR"
+  echo "  2. rehearse: gh workflow run release.yml --ref <branch> -f tag=<branch> -f publish=false"
+  echo "  3. merge the PR once CI is green"
+  echo "  4. on main: git tag -a v$new -m 'pova $new' && git push origin v$new"
+  echo "     (CI builds and tests .rpm .deb AppImage tarball, uploads them, publishes to crates.io)"
+  echo "  5. scripts/release.sh aur on a branch, PR, merge   (AUR checksums)"
   check
 }
 
