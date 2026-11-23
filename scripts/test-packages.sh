@@ -27,9 +27,14 @@ case "$kind" in
     checks="pova-import-cookie"
     ;;
   deb)
+    # Ubuntu's main archive is very slow from GitHub's (Azure) runners, so
+    # use Canonical's Azure mirror for Ubuntu images. Debian is unaffected.
     script='export DEBIAN_FRONTEND=noninteractive
-            apt-get update -qq
-            apt-get install -y -qq "/w/$NAME" > /dev/null'
+            for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
+              if [ -f "$f" ]; then sed -i -E "s#http://(archive|security)\.ubuntu\.com#http://azure.archive.ubuntu.com#g" "$f"; fi
+            done
+            apt-get update -qq -o Acquire::Retries=3
+            apt-get install -y -qq -o Acquire::Retries=3 "/w/$NAME" > /dev/null'
     checks="pova-import-cookie"
     ;;
   bin)
@@ -41,7 +46,8 @@ case "$kind" in
 esac
 
 echo "== $kind on $image: $name"
-"${DOCKER:-docker}" run --rm -v "$dir:/w:ro,z" -e NAME="$name" -e CHECKS="$checks" -e KIND="$kind" "$image" bash -euc "
+# A hung package mirror must fail the job, not stall it for hours.
+timeout "${TEST_TIMEOUT:-20m}" "${DOCKER:-docker}" run --rm -v "$dir:/w:ro,z" -e NAME="$name" -e CHECKS="$checks" -e KIND="$kind" "$image" bash -euc "
   $script
   pova --version
   for c in mpv yt-dlp pw-record pw-dump \$CHECKS; do command -v \"\$c\"; done
