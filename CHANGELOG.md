@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Expanded startup preflight checks.** Detect `rpm-ostree` (atomic Fedora),
+  `apt` (with `apt update`), `pacman`, `zypper`, `xbps-install`, `apk`,
+  `emerge`, `eopkg`, and `nix`; catch common mistakes (forgot `chmod +x`,
+  `~/.local/bin` not on `PATH`, Flatpak-only `mpv`, non-TTY stdin/stdout); and
+  show a startup notice if PipeWire visualizer tools are missing.
+
 ## 1.1.1 — community fixes
 
 The first release with outside contributions: thanks to
