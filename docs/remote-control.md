@@ -9,6 +9,7 @@ keyboard shortcut, a script or a status bar. Run `pova` followed by a command:
 | `pova play`, `pova pause` | resume, pause |
 | `pova next`, `pova prev` | next track, previous track (or restart the current one) |
 | `pova like` | like or unlike the current song (needs you to be signed in) |
+| `pova dislike` | dislike the current song and skip it (needs you to be signed in) |
 | `pova volume 40`, `pova volume +5`, `pova volume -5` | set or change the volume |
 | `pova seek 90`, `pova seek +10`, `pova seek -10` | jump to a time, or skip in seconds |
 | `pova add <song>` | search and add the top result to the end of the queue |

@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased (1.2)
+
+- **Even loudness between songs.** mpv's loudness filter evens out the
+  volume from one song to the next. On by default (`normalize_loudness`).
+- **Dislike.** `F` (or `pova dislike`) gives the current song a thumbs-down on
+  YouTube Music and skips it, so radio and autoplay steer away from it.
+- **Song-change notifications.** A desktop popup with the cover art when the
+  song changes, replacing the previous one. Off by default (`notifications`);
+  needs `notify-send` from libnotify.
+- **Up next.** Now Playing shows the song that plays after the current one.
+- **Configs page in the Esc menu.** Even loudness and notifications are
+  switched on and off there, live, and remembered between runs.
+
 ## 1.1.2 — smoother first run, offline recovery
 
 More fixes from [chrollo-03](https://github.com/chrollo-03) (#12, #14): clearer

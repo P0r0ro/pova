@@ -13,6 +13,7 @@ optdepends=(
   'python: pova-import-cookie (signing in)'
   'mpv-mpris: media keys and the desktop media widget'
   'btop: about 40 extra themes'
+  'libnotify: song-change notifications'
 )
 provides=('pova')
 conflicts=('pova')

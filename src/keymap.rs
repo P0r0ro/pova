@@ -34,6 +34,7 @@ actions! {
     Shuffle => "shuffle", "Toggle shuffle";
     Repeat => "repeat", "Cycle repeat (off / all / one)";
     Like => "like", "Like / unlike current track";
+    Dislike => "dislike", "Dislike current track and skip it";
     AddToPlaylist => "add_to_playlist", "Add selection (or current track) to a playlist";
     DeletePlaylist => "delete_playlist", "Delete the selected / open playlist (asks first)";
     VizMode => "viz_mode", "Cycle visualizer mode";
@@ -213,6 +214,7 @@ fn defaults() -> Vec<(Action, &'static [&'static str])> {
         (Shuffle, &["S"]),
         (Repeat, &["R"]),
         (Like, &["f"]),
+        (Dislike, &["F"]),
         (AddToPlaylist, &["p"]),
         (DeletePlaylist, &["D"]),
         (VizMode, &["v"]),

@@ -62,7 +62,7 @@ ported from cava, synced lyrics, album art, a queue, likes and every btop theme.
 # for the visualizer. nodejs/deno lets yt-dlp solve YouTube's JS challenge;
 # python3 is used by pova-import-cookie.
 depends = "$auto, mpv, yt-dlp, pipewire-bin"
-recommends = "nodejs | deno, python3, mpv-mpris, btop"
+recommends = "nodejs | deno, python3, mpv-mpris, btop, libnotify-bin"
 assets = [
     ["target/release/pova", "usr/bin/", "755"],
     ["scripts/import-cookie.sh", "usr/bin/pova-import-cookie", "755"],
@@ -95,6 +95,7 @@ nodejs = "*"
 python3 = "*"
 mpv-mpris = "*"
 btop = "*"
+libnotify = "*"
 
 [profile.release]
 lto = "thin"

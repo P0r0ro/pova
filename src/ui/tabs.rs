@@ -61,8 +61,9 @@ pub fn now_playing(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
 
-    // Text block below the art: title, artist, album, gap, progress, time, status.
-    let text_rows = 7u16;
+    // Text block below the art: title, artist, album, gap, progress, time,
+    // status, gap, up next.
+    let text_rows = 9u16;
     let art_rows = area.height.saturating_sub(text_rows + 1);
     // Terminal cells are ~2:1, so a square image is twice as wide as tall.
     let art_h = art_rows.min(area.width / 2);
@@ -219,6 +220,59 @@ pub fn now_playing(f: &mut Frame, app: &mut App, area: Rect) {
             line(y),
         );
     }
+    y += 2;
+    if y < bottom
+        && let Some(next) = up_next(app)
+    {
+        let label = "up next  ";
+        let room = (area.width as usize).saturating_sub(label.chars().count() + 4);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(label, Style::new().fg(t.inactive_fg)),
+                Span::styled(ellipsize(&next, room), Style::new().fg(t.graph_text)),
+            ]))
+            .alignment(Alignment::Center),
+            line(y),
+        );
+    }
+}
+
+/// What plays after the current song, for the "up next" line. None when the
+/// current song repeats.
+pub fn up_next(app: &App) -> Option<String> {
+    if app.queue.repeat == Repeat::One {
+        return None;
+    }
+    // A one-song queue on repeat-all "continues" with itself.
+    let next = app.queue.next_index().filter(|&i| Some(i) != app.queue.current);
+    if next.is_none() && app.queue.repeat == Repeat::All {
+        return None;
+    }
+    match next.and_then(|i| app.queue.get(i)) {
+        Some(t) if t.artists.is_empty() => Some(t.title.clone()),
+        Some(t) => Some(format!("{} · {}", t.title, t.artists)),
+        None if app.cfg.autoplay => Some("similar songs (autoplay)".into()),
+        None => Some("nothing, end of the queue".into()),
+    }
+}
+
+/// Cut `s` to `max` terminal columns, ending in "…" when shortened.
+fn ellipsize(s: &str, max: usize) -> String {
+    if Span::raw(s).width() <= max {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut w = 0;
+    for c in s.chars() {
+        let cw = Span::raw(c.to_string()).width();
+        if w + cw + 1 > max {
+            break;
+        }
+        out.push(c);
+        w += cw;
+    }
+    out.push('…');
+    out
 }
 
 // ───────────────────────────── lists ─────────────────────────────
@@ -799,5 +853,18 @@ fn no_lyrics(f: &mut Frame, app: &mut App, body: Rect) {
     }
     if !drew {
         centered_msg(f, body, &t, vec![Line::from(msg)]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ellipsize;
+
+    #[test]
+    fn ellipsize_counts_columns() {
+        assert_eq!(ellipsize("Fine Again", 20), "Fine Again");
+        assert_eq!(ellipsize("Fine Again", 6), "Fine …");
+        // Wide characters take two columns each.
+        assert_eq!(ellipsize("日本語の歌", 5), "日本…");
     }
 }

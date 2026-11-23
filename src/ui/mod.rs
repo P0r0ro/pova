@@ -537,6 +537,36 @@ mod tests {
     use crate::lyrics::Lyrics;
     use crate::model::{AlbumRef, Item, Track};
 
+    #[test]
+    fn configs_page_and_up_next_render() {
+        let screen = |app: &mut App| {
+            let mut term = Terminal::new(TestBackend::new(150, 42)).unwrap();
+            term.draw(|f| {
+                draw(f, app);
+            })
+            .unwrap();
+            let s: String = term.backend().buffer().content().iter().map(|c| c.symbol()).collect();
+            s
+        };
+        let mut app = app();
+        // Queue is on track 3, so track 4 is up next.
+        let np = screen(&mut app);
+        assert!(np.contains("up next"), "no up-next line");
+        assert!(np.contains("number 4"), "up next shows the wrong song");
+
+        app.overlay = Some(Overlay::Menu {
+            state: Default::default(),
+            page: crate::app::MenuPage::Configs,
+        });
+        let cfg = screen(&mut app);
+        assert!(cfg.contains("configs") && cfg.contains("Even loudness") && cfg.contains("Notifications"));
+        assert!(
+            cfg.contains("same loudness"),
+            "description of the selected option missing"
+        );
+        assert!(cfg.contains("esc back"));
+    }
+
     fn track(i: usize) -> Track {
         Track {
             video_id: format!("vid{i}"),
@@ -574,6 +604,7 @@ mod tests {
                 lyrics: l,
                 art: a,
                 resolve: unbounded_channel().0,
+                notify: unbounded_channel().0,
             },
             None,
             None,
@@ -656,6 +687,7 @@ mod tests {
                     0 => Overlay::Help { scroll: 5 },
                     1 => Overlay::Menu {
                         state: Default::default(),
+                        page: Default::default(),
                     },
                     _ => Overlay::Themes {
                         names: vec![("Default".into(), None)],
@@ -721,6 +753,7 @@ mod tests {
         app.art.as_mut().unwrap().update_resized_protocol(done);
         app.overlay = Some(Overlay::Menu {
             state: Default::default(),
+            page: Default::default(),
         });
         term.draw(|f| {
             draw(f, &mut app);
@@ -750,6 +783,7 @@ mod tests {
         let mut app = app();
         app.overlay = Some(Overlay::Menu {
             state: Default::default(),
+            page: Default::default(),
         });
         let mut term = Terminal::new(TestBackend::new(150, 42)).unwrap();
         term.draw(|f| {

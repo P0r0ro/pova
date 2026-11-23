@@ -68,6 +68,10 @@ pub enum YtmReq {
         video_id: String,
         liked: bool,
     },
+    /// Thumbs-down: YouTube plays it less and steers radio away from it.
+    Dislike {
+        video_id: String,
+    },
     Lyrics {
         video_id: String,
     },
@@ -128,6 +132,9 @@ pub enum YtmEvent {
     Rated {
         video_id: String,
         liked: bool,
+    },
+    Disliked {
+        video_id: String,
     },
     Lyrics {
         video_id: String,
@@ -427,6 +434,27 @@ async fn handle(client: &Client, req: YtmReq) -> (YtmEvent, bool) {
                         },
                         &e,
                     ),
+                },
+            }
+        }
+        YtmReq::Dislike { video_id } => {
+            let Client::Auth(yt) = client else {
+                let ev = YtmEvent::Failed {
+                    token: None,
+                    message: "Disliking songs needs you to be signed in. Run `pova-import-cookie chrome` \
+                              (or firefox) in another terminal, then try again."
+                        .into(),
+                };
+                return (ev, false);
+            };
+            match yt
+                .rate_song(VideoID::from_raw(video_id.clone()), LikeStatus::Disliked)
+                .await
+            {
+                Ok(()) => YtmEvent::Disliked { video_id },
+                Err(e) => YtmEvent::Failed {
+                    token: None,
+                    message: fail("Couldn't dislike the song", &e),
                 },
             }
         }

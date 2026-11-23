@@ -150,6 +150,10 @@ pub struct Config {
     pub mpv_args: Vec<String>,
     /// Restore the queue and playback position from the last run (paused).
     pub resume: bool,
+    /// Even out loudness between songs (mpv's loudnorm filter).
+    pub normalize_loudness: bool,
+    /// Desktop notification with the cover art when the song changes.
+    pub notifications: bool,
     /// Action name -> key(s), e.g. `next = ["N", "ctrl+right"]`.
     pub keys: HashMap<String, Vec<String>>,
     pub viz: VizConfig,
@@ -167,6 +171,8 @@ impl Default for Config {
             image_protocol: "auto".into(),
             mpv_args: Vec::new(),
             resume: true,
+            normalize_loudness: true,
+            notifications: false,
             keys: HashMap::new(),
             viz: VizConfig::default(),
         }
@@ -243,6 +249,8 @@ pub struct State {
     pub show_controls: Option<bool>,
     pub autoplay: Option<bool>,
     pub album_art: Option<bool>,
+    pub normalize_loudness: Option<bool>,
+    pub notifications: Option<bool>,
 }
 
 impl State {

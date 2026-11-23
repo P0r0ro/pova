@@ -16,7 +16,7 @@ pub struct ArtEvent {
     pub image: Option<DynamicImage>,
 }
 
-fn cache_name(url: &str) -> String {
+pub(crate) fn cache_name(url: &str) -> String {
     // FNV-1a: stable, dependency-free file name for a URL.
     let mut h: u64 = 0xcbf29ce484222325;
     for b in url.bytes() {
@@ -63,7 +63,7 @@ async fn write_atomic(path: &std::path::Path, bytes: &[u8]) {
     }
 }
 
-async fn load(http: &reqwest::Client, url: &str, path: PathBuf) -> anyhow::Result<DynamicImage> {
+pub(crate) async fn load(http: &reqwest::Client, url: &str, path: PathBuf) -> anyhow::Result<DynamicImage> {
     if let Ok(bytes) = tokio::fs::read(&path).await {
         match decode_square(bytes).await {
             Ok(img) => return Ok(img),
