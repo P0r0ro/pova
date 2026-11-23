@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (1.2)
+## 1.2.0 — even loudness, dislike, notifications
 
 - **Even loudness between songs.** mpv's loudness filter evens out the
   volume from one song to the next. On by default (`normalize_loudness`).
