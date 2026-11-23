@@ -70,6 +70,14 @@ impl VizMode {
             VizMode::Wave => VizMode::Bars,
         }
     }
+    pub fn prev(self) -> VizMode {
+        match self {
+            VizMode::Bars => VizMode::Wave,
+            VizMode::Mirror => VizMode::Bars,
+            VizMode::Mono => VizMode::Mirror,
+            VizMode::Wave => VizMode::Mono,
+        }
+    }
     pub fn label(self) -> &'static str {
         match self {
             VizMode::Bars => "bars",

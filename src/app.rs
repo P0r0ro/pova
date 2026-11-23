@@ -119,6 +119,29 @@ pub struct SearchState {
     pub suggest_due: Option<Instant>,
 }
 
+/// Byte length of the prefix of `text` matching `prefix` case-insensitively.
+/// Walks Unicode scalar boundaries so characters whose case-folding changes
+/// UTF-8 byte length (e.g. `İ` -> `i\u{307}`) never slice at the wrong offset.
+pub fn case_insensitive_prefix_len(text: &str, prefix: &str) -> Option<usize> {
+    let mut want = prefix.chars().flat_map(char::to_lowercase);
+    let mut next_want = want.next();
+    if next_want.is_none() {
+        return Some(0);
+    }
+    for (byte_idx, ch) in text.char_indices() {
+        for lc in ch.to_lowercase() {
+            if next_want != Some(lc) {
+                return None;
+            }
+            next_want = want.next();
+        }
+        if next_want.is_none() {
+            return Some(byte_idx + ch.len_utf8());
+        }
+    }
+    None
+}
+
 impl SearchState {
     /// Suggestions are shown only while typing and only for the current text.
     pub fn visible_suggestions(&self) -> &[Suggestion] {
@@ -137,13 +160,8 @@ impl SearchState {
         if self.cursor != self.input.chars().count() {
             return None;
         }
-        let typed = self.input.to_lowercase();
-        let cand = top.text.to_lowercase();
-        if cand.len() > typed.len() && cand.starts_with(&typed) && top.text.is_char_boundary(typed.len()) {
-            Some(&top.text[typed.len()..])
-        } else {
-            None
-        }
+        let n = case_insensitive_prefix_len(&top.text, &self.input)?;
+        if n < top.text.len() { Some(&top.text[n..]) } else { None }
     }
 }
 
@@ -169,6 +187,8 @@ pub struct PlayerState {
     pub idle: bool,
     pub buffering: bool,
     pub ready: bool,
+    /// Set if mpv failed to start or exited unexpectedly.
+    pub error: Option<String>,
 }
 
 pub enum Overlay {
@@ -235,6 +255,7 @@ pub enum Hit {
     Tab(Tab),
     Action(Action),
     Progress,
+    Volume,
     List,
     SearchFilter(SearchFilter),
     LibSection(LibSection),
@@ -372,6 +393,8 @@ pub struct App {
     direct_loaded: Option<String>,
     /// Tracks whose direct URL failed once (fall back to mpv's yt-dlp hook).
     direct_failed: HashSet<String>,
+    /// Consecutive playback errors without a track starting (stops infinite skip loops).
+    consecutive_errors: usize,
     /// For the "track started in N ms" log line.
     start_timer: Option<(Instant, bool)>,
 }
@@ -446,6 +469,7 @@ impl App {
             dwell_fired: None,
             direct_loaded: None,
             direct_failed: HashSet::new(),
+            consecutive_errors: 0,
             start_timer: None,
             cfg,
             paths,
@@ -499,13 +523,17 @@ impl App {
         }
     }
 
-    fn activate_menu(&mut self, item: MenuItem) {
+    fn activate_menu(&mut self, item: MenuItem, forward: bool) {
         match item {
             MenuItem::Themes => self.open_themes(),
             MenuItem::Help => self.overlay = Some(Overlay::Help { scroll: 0 }),
             MenuItem::Quit => self.quit = true,
             MenuItem::VizMode => {
-                self.viz_mode = self.viz_mode.next();
+                self.viz_mode = if forward {
+                    self.viz_mode.next()
+                } else {
+                    self.viz_mode.prev()
+                };
                 self.save_state();
             }
             MenuItem::Autoplay => {
@@ -630,6 +658,14 @@ impl App {
         let Some(track) = self.queue.get(i).cloned() else {
             return;
         };
+        if let Some(err) = self.player.error.clone() {
+            self.load_started = None;
+            self.player.time = 0.0;
+            self.player.duration = track.duration.unwrap_or(0.0);
+            self.flash(err, true);
+            self.on_track_changed();
+            return;
+        }
         let (url, direct) = self.play_url(&track);
         self.direct_loaded = direct.then(|| track.video_id.clone());
         self.start_timer = Some((Instant::now(), direct));
@@ -826,6 +862,7 @@ impl App {
     }
 
     fn next_track(&mut self) {
+        self.consecutive_errors = 0;
         match self.queue.skip_index() {
             Some(i) => self.play_index(i),
             None => {
@@ -840,6 +877,10 @@ impl App {
     }
 
     fn prev_track(&mut self) {
+        if self.current().is_none() {
+            return;
+        }
+        self.consecutive_errors = 0;
         if self.player.time > 3.0 || self.queue.prev_index().is_none() {
             self.player(PlayerCmd::SeekAbsolute(0.0));
         } else if let Some(i) = self.queue.prev_index() {
@@ -851,6 +892,7 @@ impl App {
         if tracks.is_empty() {
             return;
         }
+        self.consecutive_errors = 0;
         let n = tracks.len();
         let was_empty = self.queue.current.is_none();
         match mode {
@@ -895,15 +937,17 @@ impl App {
         match ev {
             PlayerEvent::Ready => {
                 self.player.ready = true;
+                self.player.error = None;
                 self.player(PlayerCmd::SetVolume(self.player.volume));
             }
             PlayerEvent::TimePos(t) => {
                 self.player.time = t;
-                if t > 0.0
-                    && let Some((t0, direct)) = self.start_timer.take()
-                {
-                    let how = if direct { "pre-resolved URL" } else { "yt-dlp hook" };
-                    tracing::info!("track started in {} ms ({how})", t0.elapsed().as_millis());
+                if t > 0.0 {
+                    self.consecutive_errors = 0;
+                    if let Some((t0, direct)) = self.start_timer.take() {
+                        let how = if direct { "pre-resolved URL" } else { "yt-dlp hook" };
+                        tracing::info!("track started in {} ms ({how})", t0.elapsed().as_millis());
+                    }
                 }
                 if matches!(
                     self.lyrics,
@@ -951,13 +995,18 @@ impl App {
                 self.player.idle = idle;
                 if idle && was_playing && self.load_started.is_none() {
                     // Fell off the end of mpv's playlist (end of queue, or the
-                    // preloaded track failed). Continue from the queue.
+                    // preloaded track failed). Continue from the queue unless
+                    // every track we tried errored out.
                     self.next_sent = None;
-                    match self.queue.next_index() {
-                        Some(n) if Some(n) != self.queue.current || self.queue.repeat != Repeat::Off => {
-                            self.play_index(n)
+                    if self.consecutive_errors >= self.queue.len().max(1) {
+                        self.player.time = 0.0;
+                    } else {
+                        match self.queue.next_index() {
+                            Some(n) if Some(n) != self.queue.current || self.queue.repeat != Repeat::Off => {
+                                self.play_index(n)
+                            }
+                            _ => self.player.time = 0.0,
                         }
-                        _ => self.player.time = 0.0,
                     }
                 }
             }
@@ -973,23 +1022,38 @@ impl App {
                         return;
                     }
                     self.load_started = None;
+                    self.consecutive_errors += 1;
                     let what = self.current().map(|t| t.title.clone()).unwrap_or_default();
                     self.flash(
                         format!("Can't play {what}: {}", error.unwrap_or_else(|| "unknown error".into())),
                         true,
                     );
-                    // mpv goes idle next; make sure we skip instead of retrying.
+                    // mpv goes idle next; skip to a different track unless every
+                    // track in the queue has failed.
                     if self.player.idle
-                        && let Some(n) = self.queue.skip_index()
+                        && self.consecutive_errors < self.queue.len()
+                        && let Some(n) = self.queue.skip_index().filter(|&n| Some(n) != self.queue.current)
                     {
                         self.play_index(n);
                     }
                 }
             }
-            PlayerEvent::Error(e) => self.flash(format!("mpv: {e}"), true),
+            PlayerEvent::Error(e) => {
+                let msg = format!("mpv: {e}");
+                self.player.error = Some(msg.clone());
+                self.load_started = None;
+                self.flash(msg, true);
+            }
             PlayerEvent::Exited => {
-                self.flash("mpv exited — playback unavailable", true);
                 self.player.ready = false;
+                self.load_started = None;
+                // Keep a more specific startup error (e.g. "mpv not installed")
+                // instead of overwriting it milliseconds later.
+                if self.player.error.is_none() {
+                    let msg = "mpv exited — playback unavailable".to_string();
+                    self.player.error = Some(msg.clone());
+                    self.flash(msg, true);
+                }
             }
         }
         self.dirty = true;
@@ -1337,13 +1401,13 @@ impl App {
                 "ok".into()
             }
             C::Play => {
-                if self.player.paused {
+                if self.player.paused || (self.player.idle && self.load_started.is_none()) {
                     self.dispatch(Action::PlayPause);
                 }
                 "ok".into()
             }
             C::Pause => {
-                if !self.player.paused {
+                if !self.player.paused && !(self.player.idle && self.load_started.is_none()) {
                     self.dispatch(Action::PlayPause);
                 }
                 "ok".into()
@@ -1522,9 +1586,28 @@ impl App {
                 s.input.clear();
                 s.cursor = 0;
             }
-            KeyCode::Char('u') | KeyCode::Char('w') if ctrl => {
-                s.input.clear();
-                s.cursor = 0;
+            KeyCode::Char('u') if ctrl => {
+                if s.cursor > 0 {
+                    let end = s.input.char_indices().nth(s.cursor).map_or(s.input.len(), |(i, _)| i);
+                    s.input.drain(..end);
+                    s.cursor = 0;
+                }
+            }
+            KeyCode::Char('w') if ctrl => {
+                let chars: Vec<char> = s.input.chars().collect();
+                let mut new_cur = s.cursor.min(chars.len());
+                while new_cur > 0 && chars[new_cur - 1].is_whitespace() {
+                    new_cur -= 1;
+                }
+                while new_cur > 0 && !chars[new_cur - 1].is_whitespace() {
+                    new_cur -= 1;
+                }
+                if new_cur < s.cursor {
+                    let start = s.input.char_indices().nth(new_cur).map_or(s.input.len(), |(i, _)| i);
+                    let end = s.input.char_indices().nth(s.cursor).map_or(s.input.len(), |(i, _)| i);
+                    s.input.drain(start..end);
+                    s.cursor = new_cur;
+                }
             }
             KeyCode::Backspace => {
                 if s.cursor > 0 {
@@ -1669,10 +1752,17 @@ impl App {
         while headers.get(next).copied().unwrap_or(false) {
             let n = next as isize + dir;
             if n < 0 || n >= len as isize {
-                // Nowhere to go in that direction; search the other way.
-                next = (0..len)
-                    .find(|&i| !headers.get(i).copied().unwrap_or(false))
-                    .unwrap_or(0);
+                // Nowhere to go in that direction; land on the closest non-header.
+                next = if dir > 0 {
+                    (0..len)
+                        .rev()
+                        .find(|&i| !headers.get(i).copied().unwrap_or(false))
+                        .unwrap_or(0)
+                } else {
+                    (0..len)
+                        .find(|&i| !headers.get(i).copied().unwrap_or(false))
+                        .unwrap_or(0)
+                };
                 break;
             }
             next = n as usize;
@@ -1915,17 +2005,26 @@ impl App {
             &self.library.stack
         };
         let Some(lv) = stack.last() else { return };
-        let Some(item) = lv.selected().cloned() else { return };
+        let Some(sel_idx) = lv.state.selected() else { return };
+        let Some(item) = lv.items.get(sel_idx).cloned() else {
+            return;
+        };
         let view = lv.view.clone();
         let whole_list = matches!(view, View::Album(_) | View::Playlist(_) | View::LikedSongs);
         let list_tracks = lv.tracks();
+        // Count tracks preceding the selected row so duplicate songs in a
+        // playlist start at the exact row the user chose.
+        let track_pos = lv.items[..sel_idx]
+            .iter()
+            .filter(|i| matches!(i, Item::Track(_)))
+            .count();
         match item {
             Item::Track(t) => {
+                self.consecutive_errors = 0;
                 if mode == EnqueueMode::PlayNow && whole_list {
                     // Play the album/playlist from this track onwards.
-                    let start = list_tracks.iter().position(|x| x.video_id == t.video_id).unwrap_or(0);
                     self.autoplay_requested = None;
-                    self.queue.replace(list_tracks, start);
+                    self.queue.replace(list_tracks, track_pos);
                     self.play_index(self.queue.current.unwrap_or(0));
                 } else {
                     self.enqueue(vec![t], mode);
@@ -2104,6 +2203,22 @@ impl App {
             self.queue_state.select(None);
             self.player(PlayerCmd::Stop);
             self.next_sent = None;
+            self.lyrics = LyricsState::None;
+            self.lyrics_requested = None;
+            self.lyrics_scroll = None;
+            self.art_key = None;
+            self.art_loading = false;
+            if let Some(a) = self.art.as_mut() {
+                a.empty_protocol();
+            }
+            self.player.time = 0.0;
+            self.player.duration = 0.0;
+            self.load_started = None;
+            self.direct_loaded = None;
+            self.start_timer = None;
+            self.autoplay_requested = None;
+            self.consecutive_errors = 0;
+            self.save_session();
             return;
         }
         self.queue_state.select(Some(i.min(self.queue.len() - 1)));
@@ -2149,10 +2264,12 @@ impl App {
         let Some(overlay) = self.overlay.as_mut() else { return };
         match overlay {
             Overlay::Help { scroll } => match action {
-                Some(Action::Down) => *scroll += 1,
+                Some(Action::Down) => *scroll = scroll.saturating_add(1),
                 Some(Action::Up) => *scroll = scroll.saturating_sub(1),
-                Some(Action::PageDown) => *scroll += 10,
+                Some(Action::PageDown) => *scroll = scroll.saturating_add(10),
                 Some(Action::PageUp) => *scroll = scroll.saturating_sub(10),
+                Some(Action::Top) => *scroll = 0,
+                Some(Action::Bottom) => *scroll = u16::MAX,
                 Some(Action::Quit) => self.quit = true,
                 _ => self.overlay = None,
             },
@@ -2183,6 +2300,14 @@ impl App {
                     }
                     (_, Some(Action::PageUp)) => {
                         state.select(Some(cur.saturating_sub(10)));
+                        self.preview_theme();
+                    }
+                    (_, Some(Action::Top)) => {
+                        state.select(Some(0));
+                        self.preview_theme();
+                    }
+                    (_, Some(Action::Bottom)) => {
+                        state.select(Some(len.saturating_sub(1)));
                         self.preview_theme();
                     }
                     _ => {}
@@ -2245,6 +2370,8 @@ impl App {
                     (KeyCode::Esc, _) | (_, Some(Action::AddToPlaylist)) => self.overlay = None,
                     (_, Some(Action::Down)) => state.select(Some((cur + 1) % len)),
                     (_, Some(Action::Up)) => state.select(Some((cur + len - 1) % len)),
+                    (_, Some(Action::Top)) => state.select(Some(0)),
+                    (_, Some(Action::Bottom)) => state.select(Some(len - 1)),
                     (KeyCode::Enter, _) if cur == 0 => *naming = Some(String::new()),
                     (KeyCode::Enter, _) => {
                         if let Some(p) = playlists.as_ref().and_then(|p| p.get(cur - 1)) {
@@ -2270,14 +2397,18 @@ impl App {
                 let is_setting = matches!(item, MenuItem::VizMode | MenuItem::Autoplay | MenuItem::AlbumArt);
                 match (k.code, action) {
                     // Settings toggle in place (menu stays open, like btop's options).
-                    (KeyCode::Enter | KeyCode::Left | KeyCode::Right, _) if is_setting => self.activate_menu(item),
+                    (KeyCode::Enter | KeyCode::Left | KeyCode::Right, _) if is_setting => {
+                        self.activate_menu(item, k.code != KeyCode::Left);
+                    }
                     (KeyCode::Enter, _) | (_, Some(Action::Select)) => {
                         self.overlay = None;
-                        self.activate_menu(item);
+                        self.activate_menu(item, true);
                     }
                     (KeyCode::Esc, _) => self.overlay = None,
                     (_, Some(Action::Down)) => state.select(Some((cur + 1) % len)),
                     (_, Some(Action::Up)) => state.select(Some((cur + len - 1) % len)),
+                    (_, Some(Action::Top)) => state.select(Some(0)),
+                    (_, Some(Action::Bottom)) => state.select(Some(len - 1)),
                     (_, Some(Action::Quit)) => self.quit = true,
                     _ => {}
                 }
@@ -2289,25 +2420,78 @@ impl App {
 
     fn on_mouse(&mut self, m: MouseEvent) {
         match m.kind {
-            MouseEventKind::ScrollDown => {
-                if self.overlay.is_none() {
-                    self.move_selection(3);
-                }
-            }
-            MouseEventKind::ScrollUp => {
-                if self.overlay.is_none() {
-                    self.move_selection(-3);
-                }
-            }
+            MouseEventKind::ScrollDown => self.on_scroll(m.column, m.row, true),
+            MouseEventKind::ScrollUp => self.on_scroll(m.column, m.row, false),
             MouseEventKind::Down(MouseButton::Left) => self.on_click(m.column, m.row),
             _ => return,
         }
         self.dirty = true;
     }
 
+    fn on_scroll(&mut self, x: u16, y: u16, down: bool) {
+        if let Some(overlay) = self.overlay.as_mut() {
+            match overlay {
+                Overlay::Help { scroll } => {
+                    *scroll = if down {
+                        scroll.saturating_add(3)
+                    } else {
+                        scroll.saturating_sub(3)
+                    };
+                }
+                Overlay::Themes { names, state, .. } => {
+                    let len = names.len();
+                    if len > 0 {
+                        let cur = state.selected().unwrap_or(0);
+                        let next = if down { (cur + 1) % len } else { (cur + len - 1) % len };
+                        state.select(Some(next));
+                        self.preview_theme();
+                    }
+                }
+                Overlay::Menu { state } => {
+                    let len = MenuItem::ALL.len();
+                    let cur = state.selected().unwrap_or(0);
+                    let next = if down { (cur + 1) % len } else { (cur + len - 1) % len };
+                    state.select(Some(next));
+                }
+                Overlay::AddToPlaylist {
+                    playlists,
+                    state,
+                    naming,
+                    ..
+                } if naming.is_none() => {
+                    let len = playlists.as_ref().map_or(1, |p| p.len() + 1);
+                    let cur = state.selected().unwrap_or(0).min(len - 1);
+                    let next = if down { (cur + 1) % len } else { (cur + len - 1) % len };
+                    state.select(Some(next));
+                }
+                Overlay::Confirm { .. } | Overlay::AddToPlaylist { .. } => {}
+            }
+            return;
+        }
+        if matches!(self.hits.at(x, y), Some((_, Hit::Volume))) {
+            self.dispatch(if down { Action::VolumeDown } else { Action::VolumeUp });
+            return;
+        }
+        self.move_selection(if down { 3 } else { -3 });
+    }
+
+    fn is_header_at(&self, idx: usize) -> bool {
+        let stack = match self.tab {
+            Tab::Search => &self.search.stack,
+            Tab::Library => &self.library.stack,
+            _ => return false,
+        };
+        stack
+            .last()
+            .and_then(|lv| lv.items.get(idx))
+            .is_some_and(|item| matches!(item, Item::Header(_)))
+    }
+
     fn on_click(&mut self, x: u16, y: u16) {
-        if self.overlay.is_some() {
-            self.overlay = None;
+        if let Some(overlay) = self.overlay.take() {
+            if let Overlay::Themes { original, .. } = overlay {
+                self.theme = original;
+            }
             return;
         }
         let double = self
@@ -2323,6 +2507,16 @@ impl App {
                     if self.player.duration > 0.0 && rect.width > 1 {
                         let frac = (x - rect.x) as f64 / (rect.width - 1) as f64;
                         self.player(PlayerCmd::SeekAbsolute(frac * self.player.duration));
+                    }
+                }
+                Hit::Volume => {
+                    if rect.width > 1 {
+                        let frac = ((x - rect.x) as f64 / (rect.width - 1) as f64).clamp(0.0, 1.0);
+                        self.player.volume = (frac * 100.0).round();
+                        self.player(PlayerCmd::SetVolume(self.player.volume));
+                        if self.player.muted {
+                            self.player(PlayerCmd::SetMute(false));
+                        }
                     }
                 }
                 Hit::SearchFilter(f) => {
@@ -2350,6 +2544,9 @@ impl App {
                         let idx = offset + (y - area.y) as usize;
                         if self.tab == Tab::Search {
                             self.search.editing = false;
+                        }
+                        if self.is_header_at(idx) {
+                            return;
                         }
                         if let Some((state, len)) = self.active_list()
                             && idx < len
@@ -2596,9 +2793,14 @@ mod resolve_tests {
     }
 
     fn harness() -> Harness {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CASE: AtomicUsize = AtomicUsize::new(0);
         let (p, prx) = unbounded_channel();
         let (r, rrx) = unbounded_channel();
-        let tmp = std::env::temp_dir().join("pova-resolve-test");
+        // Reuse one root dir across runs while isolating parallel tests.
+        let tmp = std::env::temp_dir()
+            .join("pova-resolve-test")
+            .join(format!("case-{}", CASE.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir_all(&tmp).unwrap();
         let paths = Paths {
             config_dir: tmp.clone(),
@@ -2782,6 +2984,190 @@ mod resolve_tests {
         h.app
             .on_terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
         assert!(matches!(h.app.overlay, Some(Overlay::Themes { .. })));
+    }
+
+    #[test]
+    fn unicode_case_folding_prefix_and_word_delete() {
+        // Turkish dotted capital 'İ' (2 bytes) lowercases to "i\u{307}" (3 bytes).
+        assert_eq!(case_insensitive_prefix_len("İstanbul", "i\u{307}st"), Some(4));
+        assert_eq!(case_insensitive_prefix_len("Istanbul", "İ"), None);
+
+        let mut h = harness();
+        h.app.dispatch(Action::TabSearch);
+        for c in "daft punk get lucky".chars() {
+            h.app
+                .on_terminal(Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)));
+        }
+        // Ctrl+W deletes the last word only.
+        h.app
+            .on_terminal(Event::Key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)));
+        assert_eq!(h.app.search.input, "daft punk get ");
+        h.app
+            .on_terminal(Event::Key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)));
+        assert_eq!(h.app.search.input, "daft punk ");
+        // Ctrl+U clears before the cursor.
+        h.app
+            .on_terminal(Event::Key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)));
+        assert_eq!(h.app.search.input, "");
+    }
+
+    #[test]
+    fn error_skip_stops_instead_of_looping_forever() {
+        let mut h = harness();
+        h.app.queue.replace(vec![track("a")], 0);
+        h.app.queue.repeat = Repeat::All;
+        h.app.play_index(0);
+        h.app.player.idle = true;
+        drain(&mut h.player);
+        // Repeat::All with 1 failing track must not re-load it forever.
+        h.app.on_player(PlayerEvent::EndFile {
+            reason: "error".into(),
+            error: Some("403".into()),
+        });
+        assert!(drain(&mut h.player).is_empty());
+    }
+
+    #[test]
+    fn removing_last_track_clears_stale_state() {
+        let mut h = harness();
+        h.app.queue.replace(vec![track("a")], 0);
+        h.app.play_index(0);
+        h.app.player.time = 42.0;
+        h.app.player.duration = 200.0;
+        h.app.art_key = Some("https://example.com/art.jpg".into());
+        h.app.tab = Tab::Queue;
+        h.app.queue_state.select(Some(0));
+        drain(&mut h.player);
+
+        h.app.dispatch(Action::Remove);
+        assert!(h.app.queue.is_empty());
+        assert!(matches!(h.app.lyrics, LyricsState::None));
+        assert!(h.app.lyrics_requested.is_none());
+        assert!(h.app.art_key.is_none());
+        assert_eq!(h.app.player.time, 0.0);
+        assert_eq!(h.app.player.duration, 0.0);
+        assert!(drain(&mut h.player).iter().any(|c| matches!(c, PlayerCmd::Stop)));
+    }
+
+    #[test]
+    fn menu_left_cycles_viz_backwards_and_click_reverts_theme_preview() {
+        let mut h = harness();
+        h.app.viz_mode = VizMode::Bars;
+        h.app.dispatch(Action::Menu);
+        let viz_idx = MenuItem::ALL.iter().position(|i| *i == MenuItem::VizMode).unwrap();
+        if let Some(Overlay::Menu { state }) = h.app.overlay.as_mut() {
+            state.select(Some(viz_idx));
+        }
+        h.app
+            .on_terminal(Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)));
+        assert_eq!(h.app.viz_mode, VizMode::Wave);
+
+        // Theme preview dismissed by mouse click must revert to the original theme.
+        let orig_name = h.app.theme.name.clone();
+        h.app.overlay = Some(Overlay::Themes {
+            names: vec![("Default".into(), None), ("Other".into(), None)],
+            state: TableState::default(),
+            original: h.app.theme.clone(),
+        });
+        h.app.theme.name = "Other".into();
+        h.app.on_terminal(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert!(h.app.overlay.is_none());
+        assert_eq!(h.app.theme.name, orig_name);
+    }
+
+    #[test]
+    fn volume_click_and_scroll_and_header_click_ignored() {
+        let mut h = harness();
+        h.app.player.muted = true;
+        h.app.hits.add(Rect::new(10, 5, 11, 1), Hit::Volume);
+        // Click halfway along an 11-cell meter (x = 15 -> 5/10 = 50%).
+        h.app.on_terminal(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 15,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(h.app.player.volume, 50.0);
+        let cmds = drain(&mut h.player);
+        assert!(cmds.iter().any(|c| matches!(c, PlayerCmd::SetVolume(v) if *v == 50.0)));
+        assert!(cmds.iter().any(|c| matches!(c, PlayerCmd::SetMute(false))));
+
+        // Scroll up on volume meter increases volume by 5.
+        h.app.on_terminal(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 15,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(h.app.player.volume, 55.0);
+
+        // Clicking a Header item in Search must not select it.
+        let mut lv = ListView::new(View::Playlist("PL1".into()), 1);
+        lv.loading = false;
+        lv.items = vec![
+            Item::Header("Section".into()),
+            Item::Track(track("a")),
+            Item::Track(track("a")),
+        ];
+        lv.state.select(Some(2));
+        h.app.tab = Tab::Search;
+        h.app.search.stack.push(lv);
+        h.app.hits.list = Some((Rect::new(0, 0, 40, 10), 0));
+        h.app.hits.add(Rect::new(0, 0, 40, 10), Hit::List);
+        h.app.on_terminal(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 5,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(h.app.search.stack[0].state.selected(), Some(2));
+
+        // Playing the second duplicate track in a playlist must start at index 1, not 0.
+        h.app.dispatch(Action::Select);
+        assert_eq!(h.app.queue.current, Some(1));
+    }
+
+    #[test]
+    fn missing_mpv_keeps_startup_error_and_does_not_spin_loading() {
+        let mut h = harness();
+        h.app
+            .on_player(PlayerEvent::Error("failed to start mpv (is it installed?)".into()));
+        h.app.on_player(PlayerEvent::Exited);
+        assert!(
+            h.app
+                .flash
+                .as_ref()
+                .is_some_and(|f| f.text.contains("failed to start mpv"))
+        );
+        h.app.queue.replace(vec![track("a")], 0);
+        h.app.play_index(0);
+        assert!(h.app.load_started.is_none());
+        assert!(
+            h.app
+                .flash
+                .as_ref()
+                .is_some_and(|f| f.text.contains("failed to start mpv"))
+        );
+    }
+
+    #[test]
+    fn remote_pause_on_idle_queue_does_not_start_playback() {
+        let mut h = harness();
+        h.app.queue.replace(vec![track("a")], 0);
+        h.app.player.idle = true;
+        h.app.player.paused = false;
+        assert_eq!(h.app.on_control(crate::control::Command::Pause), "ok");
+        assert!(drain(&mut h.player).is_empty(), "pause while idle must not load");
+        assert_eq!(h.app.on_control(crate::control::Command::Play), "ok");
+        assert!(
+            drain(&mut h.player).iter().any(|c| matches!(c, PlayerCmd::Load { .. })),
+            "play while idle should load the current track"
+        );
     }
 }
 
