@@ -1,0 +1,101 @@
+name: Package tests
+
+# Builds the .rpm, .deb and plain binary the way a release does, then installs
+# them on clean Fedora, Ubuntu, Debian and Arch containers, and rebuilds the
+# COPR source RPM offline. Slow, so not a required check: it runs when
+# packaging changes, weekly (distro repos change under us), or by hand.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "packaging/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/import-cookie.sh"
+      - "scripts/test-packages.sh"
+      - ".github/workflows/packages.yml"
+  schedule:
+    - cron: "17 5 * * 1" # Mondays 05:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+      - name: Build release binary and packages
+        run: |
+          cargo build --release --locked
+          cargo deb --no-build --no-strip
+          cargo generate-rpm
+          mkdir out
+          cp target/release/pova target/debian/*.deb target/generate-rpm/*.rpm out/
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: out/
+          retention-days: 3
+
+  install:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { kind: rpm, image: "fedora:latest" }
+          - { kind: deb, image: "ubuntu:24.04" }
+          - { kind: deb, image: "debian:stable" }
+          - { kind: bin, image: "archlinux:latest" }
+    name: install (${{ matrix.image }})
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: out
+      - name: Install and verify
+        env:
+          KIND: ${{ matrix.kind }}
+          IMAGE: ${{ matrix.image }}
+        run: |
+          chmod +x out/pova
+          case "$KIND" in
+            rpm) file=$(ls out/*.rpm) ;;
+            deb) file=$(ls out/*.deb) ;;
+            bin) file=out/pova ;;
+          esac
+          scripts/test-packages.sh "$KIND" "$file" "$IMAGE"
+
+  copr-spec:
+    # The COPR spec builds from source with vendored crates, offline. Make
+    # sure it still does (BuildRequires, vendoring, file list).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build the SRPM and rebuild it on Fedora
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src fedora:latest bash -euc '
+            dnf install -y -q cargo rust rpm-build git tar gzip > /dev/null
+            git config --global --add safe.directory /src
+            out=$(mktemp -d)
+            packaging/copr/make-srpm.sh "$out"
+            rpmbuild --rebuild --define "_topdir $out/top" "$out"/*.src.rpm > "$out/build.log" 2>&1 \
+              || { tail -40 "$out/build.log"; exit 1; }
+            rpm -qpl "$out"/top/RPMS/*/pova-*.rpm
+            rpm -qp --requires "$out"/top/RPMS/*/pova-*.rpm | grep -E "^(mpv|yt-dlp|pipewire-utils)$"'
