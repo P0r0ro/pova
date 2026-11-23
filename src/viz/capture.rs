@@ -87,18 +87,23 @@ fn spawn_recorder(target: Target, rate: u32) -> std::io::Result<Child> {
     cmd.spawn()
 }
 
-fn read_into(mut stdout: std::process::ChildStdout, mut producer: rtrb::Producer<f32>) -> rtrb::Producer<f32> {
+fn read_into(stdout: std::process::ChildStdout, producer: rtrb::Producer<f32>) -> rtrb::Producer<f32> {
+    read_stream_into(stdout, producer)
+}
+
+fn read_stream_into<R: Read>(mut reader: R, mut producer: rtrb::Producer<f32>) -> rtrb::Producer<f32> {
     let mut buf = [0u8; 4096];
-    let mut carry: Vec<u8> = Vec::with_capacity(4);
+    let mut carry: Vec<u8> = Vec::with_capacity(8);
     loop {
-        let n = match stdout.read(&mut buf) {
+        let n = match reader.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(n) => n,
         };
         carry.extend_from_slice(&buf[..n]);
-        let whole = carry.len() / 4 * 4;
+        // Keep complete stereo frames (2 x f32 = 8 bytes) so L/R never swap.
+        let whole = carry.len() / 8 * 8;
         let samples = whole / 4;
-        let writable = producer.slots().min(samples);
+        let writable = (producer.slots() & !1).min(samples);
         if writable > 0
             && let Ok(mut chunk) = producer.write_chunk_uninit(writable)
         {
@@ -174,5 +179,44 @@ mod tests {
         assert_eq!(pick_node(&graph, "pova-222"), Some(20));
         assert_eq!(pick_node(&graph, "pova-111"), Some(10));
         assert_eq!(pick_node(&graph, "pova-333"), None);
+    }
+
+    #[test]
+    fn read_stream_preserves_stereo_alignment_across_odd_chunks() {
+        struct OddChunks {
+            data: Vec<u8>,
+            pos: usize,
+            sizes: &'static [usize],
+            step: usize,
+        }
+        impl Read for OddChunks {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.pos >= self.data.len() {
+                    return Ok(0);
+                }
+                let want = self.sizes[self.step % self.sizes.len()];
+                self.step += 1;
+                let n = want.min(self.data.len() - self.pos).min(buf.len());
+                buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+                self.pos += n;
+                Ok(n)
+            }
+        }
+        let samples = [1.0f32, -1.0, 2.0, -2.0, 3.0, -3.0];
+        let mut bytes = Vec::new();
+        for s in samples {
+            bytes.extend_from_slice(&s.to_ne_bytes());
+        }
+        // Odd ring capacity (5 slots): must write at most 4 samples (2 stereo frames).
+        let (producer, mut consumer) = rtrb::RingBuffer::<f32>::new(5);
+        let reader = OddChunks {
+            data: bytes,
+            pos: 0,
+            sizes: &[5, 3, 7, 1, 8],
+            step: 0,
+        };
+        read_stream_into(reader, producer);
+        let got: Vec<f32> = std::iter::from_fn(|| consumer.pop().ok()).collect();
+        assert_eq!(got, vec![1.0, -1.0, 2.0, -2.0]);
     }
 }

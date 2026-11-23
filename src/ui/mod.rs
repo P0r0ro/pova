@@ -266,6 +266,11 @@ fn draw_viz(f: &mut Frame, app: &mut App, area: Rect) -> usize {
     let mut right = border_label(t, t.box_viz, None, "", false);
     right.insert(1, Span::styled(mode, Style::new().fg(t.graph_text)));
     right.push(Span::styled("─", Style::new().fg(t.box_viz)));
+    let right_w = spans_width(&right);
+    if area.width > right_w + 2 {
+        let rx = area.x + area.width - 1 - right_w;
+        app.hits.add(Rect::new(rx, area.y, right_w.saturating_sub(1), 1), Hit::Action(Action::VizMode));
+    }
     let status = if app.viz_frame.active {
         Span::styled("● live", Style::new().fg(t.accent))
     } else if app.player.paused && app.current().is_some() {
@@ -461,10 +466,25 @@ fn draw_controls(f: &mut Frame, app: &mut App, area: Rect) {
         v.push(Span::styled(format!(" {label}"), Style::new().fg(t.main_fg)));
         let line_w = spans_width(&v);
         let vx = inner.x + inner.width.saturating_sub(line_w) / 2;
+        let vy = inner.y + 1;
         f.render_widget(
             Paragraph::new(Line::from(v)),
-            Rect::new(vx, inner.y + 1, line_w.min(inner.width), 1),
+            Rect::new(vx, vy, line_w.min(inner.width), 1),
         );
+        // Click "vol" or the %/muted label to mute; click or scroll the meter to set volume.
+        let vol_label_w = 4u16; // "vol "
+        if vx + vol_label_w <= inner.x + inner.width {
+            app.hits.add(Rect::new(vx, vy, vol_label_w, 1), Hit::Action(Action::Mute));
+        }
+        let meter_x = vx + vol_label_w;
+        if meter_w > 1 && meter_x + meter_w <= inner.x + inner.width {
+            app.hits.add(Rect::new(meter_x, vy, meter_w, 1), Hit::Volume);
+        }
+        let pct_x = meter_x + meter_w;
+        let pct_w = (label.len() as u16 + 1).min((inner.x + inner.width).saturating_sub(pct_x));
+        if pct_w > 0 {
+            app.hits.add(Rect::new(pct_x, vy, pct_w, 1), Hit::Action(Action::Mute));
+        }
     }
 
     if inner.height >= 3 {
