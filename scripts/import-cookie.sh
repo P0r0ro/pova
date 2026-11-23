@@ -35,7 +35,7 @@ yt-dlp -q --no-warnings "${js[@]}" --cookies-from-browser "$browser" --cookies "
 [[ -s "$work/jar" ]] || { echo "could not read cookies from '$browser'" >&2; exit 1; }
 
 python3 -I - "$work/jar" "$out" <<'PY'
-import sys
+import os, sys
 src, dst = sys.argv[1], sys.argv[2]
 jar = {}
 for line in open(src, encoding="utf-8", errors="replace"):
@@ -52,7 +52,13 @@ for line in open(src, encoding="utf-8", errors="replace"):
             jar[name] = value
 if not any(k in jar for k in ("SAPISID", "__Secure-3PAPISID")):
     sys.exit("no YouTube login cookies found - are you signed in to music.youtube.com in that browser?")
-open(dst, "w").write("; ".join(f"{k}={v}" for k, v in jar.items()) + "\n")
+# Write atomically with mode 600 so a running pova's cookie watcher never sees a
+# half-written file and the file is never readable by other users.
+tmp = f"{dst}.tmp.{os.getpid()}"
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w", encoding="utf-8") as fh:
+    fh.write("; ".join(f"{k}={v}" for k, v in jar.items()) + "\n")
+os.replace(tmp, dst)
 print(f"wrote {len(jar)} cookies to {dst}")
 PY
 chmod 600 "$out"

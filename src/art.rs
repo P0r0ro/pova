@@ -48,20 +48,37 @@ pub async fn run(cache_dir: PathBuf, mut reqs: UnboundedReceiver<ArtReq>, events
     }
 }
 
-async fn load(http: &reqwest::Client, url: &str, path: PathBuf) -> anyhow::Result<DynamicImage> {
-    let bytes = match tokio::fs::read(&path).await {
-        Ok(b) => b,
-        Err(_) => {
-            let b = http.get(url).send().await?.error_for_status()?.bytes().await?.to_vec();
-            let _ = tokio::fs::write(&path, &b).await;
-            b
-        }
-    };
+async fn decode_square(bytes: Vec<u8>) -> anyhow::Result<DynamicImage> {
     tokio::task::spawn_blocking(move || -> anyhow::Result<DynamicImage> {
         let img = image::load_from_memory(&bytes)?;
         Ok(square(img))
     })
     .await?
+}
+
+async fn write_atomic(path: &std::path::Path, bytes: &[u8]) {
+    let tmp = path.with_extension("img.tmp");
+    if tokio::fs::write(&tmp, bytes).await.is_ok() {
+        let _ = tokio::fs::rename(&tmp, path).await;
+    }
+}
+
+async fn load(http: &reqwest::Client, url: &str, path: PathBuf) -> anyhow::Result<DynamicImage> {
+    if let Ok(bytes) = tokio::fs::read(&path).await {
+        match decode_square(bytes).await {
+            Ok(img) => return Ok(img),
+            Err(e) => {
+                // Corrupt or truncated cache file: drop it and re-download.
+                tracing::debug!("dropping corrupt art cache {}: {e}", path.display());
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+        }
+    }
+    let bytes = http.get(url).send().await?.error_for_status()?.bytes().await?.to_vec();
+    let img = decode_square(bytes.clone()).await?;
+    // Only cache bytes that actually decoded, atomically.
+    write_atomic(&path, &bytes).await;
+    Ok(img)
 }
 
 /// Centre-crop to a square (video thumbnails are 4:3/16:9) and cap the size.
@@ -113,5 +130,17 @@ mod tests {
         assert_eq!((out.width(), out.height()), (270, 270));
         let px = out.to_rgb8();
         assert_eq!(px.get_pixel(0, 0).0, [200, 100, 50]);
+    }
+
+    #[tokio::test]
+    async fn corrupt_cache_file_is_removed_instead_of_staying_poisoned() {
+        let dir = crate::app::test_paths().cache_dir;
+        let path = dir.join("corrupt.img");
+        tokio::fs::write(&path, b"not an image").await.unwrap();
+        let http = reqwest::Client::new();
+        // Download fails (invalid URL scheme), but the corrupt cache file must be removed.
+        let res = load(&http, "http://127.0.0.1:1/unreachable.jpg", path.clone()).await;
+        assert!(res.is_err());
+        assert!(!path.exists(), "corrupt cache file should have been removed");
     }
 }

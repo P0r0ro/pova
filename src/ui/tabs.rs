@@ -508,17 +508,33 @@ pub fn search(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         Span::styled(app.search.input.clone(), Style::new().fg(t.title))
     };
-    let mut line = vec![Span::styled("⌕ ", prompt_style), text];
+    let mut line = vec![text];
     // Inline completion from the top suggestion, dimmed (→ accepts it).
     if let Some(ghost) = app.search.ghost() {
         line.push(Span::styled(ghost.to_string(), Style::new().fg(t.inactive_fg)));
     }
-    f.render_widget(Paragraph::new(Line::from(line)), input);
-    if app.search.editing {
+    let prompt_w = 2u16.min(input.width);
+    f.render_widget(
+        Paragraph::new(Span::styled("⌕ ", prompt_style)),
+        Rect {
+            width: prompt_w,
+            ..input
+        },
+    );
+    let field = Rect {
+        x: input.x + prompt_w,
+        width: input.width.saturating_sub(prompt_w),
+        ..input
+    };
+    let mut scroll_x = 0u16;
+    if app.search.editing && field.width > 0 {
         let before: String = app.search.input.chars().take(app.search.cursor).collect();
-        let cx = input.x + 2 + Span::raw(before.as_str()).width() as u16;
-        f.set_cursor_position((cx.min(input.x + input.width.saturating_sub(1)), input.y));
+        let cursor_w = Span::raw(before.as_str()).width() as u16;
+        scroll_x = cursor_w.saturating_sub(field.width.saturating_sub(1));
+        let cx = field.x + cursor_w.saturating_sub(scroll_x);
+        f.set_cursor_position((cx.min(field.x + field.width.saturating_sub(1)), field.y));
     }
+    f.render_widget(Paragraph::new(Line::from(line)).scroll((0, scroll_x)), field);
     // Divider under the input, btop style.
     f.render_widget(
         Paragraph::new("─".repeat(gap.width as usize)).style(Style::new().fg(t.div_line)),
