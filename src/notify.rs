@@ -13,7 +13,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 /// Shown when notifications are turned on without notify-send installed.
 pub const MISSING: &str = "Notifications need the notify-send program. Install it \
      (Fedora: sudo dnf install libnotify · Debian, Ubuntu: sudo apt install libnotify-bin · \
-     Arch: sudo pacman -S libnotify), then turn notifications on again in Esc → Configs.";
+     Arch: sudo pacman -S libnotify), then turn notifications on again in the Esc menu.";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Note {

@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table};
 
-use crate::app::{App, MenuPage, Overlay};
+use crate::app::{App, MenuItem, Overlay};
 use crate::keymap::Action;
 use crate::ui::banner;
 
@@ -101,9 +101,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             let table = Table::new(rows, [Constraint::Fill(1), Constraint::Length(9)]).row_highlight_style(sel);
             f.render_stateful_widget(table, inner, state);
         }
-        Overlay::Menu { state, page } => {
-            let (selected, page) = (state.selected().unwrap_or(0), *page);
-            draw_menu(f, app, area, page, selected);
+        Overlay::Menu { state } => {
+            let state = *state;
+            draw_menu(f, app, area, state.selected().unwrap_or(0));
         }
         Overlay::Confirm { question, yes, .. } => {
             let width = 60.min(area.width.saturating_sub(4)).max(24);
@@ -226,36 +226,24 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
-/// btop-style Esc menu: the pova logo banner above the options. Sub-pages
-/// (Configs) get a heading and a line describing the selected option.
-fn draw_menu(f: &mut Frame, app: &mut App, area: Rect, page: MenuPage, selected: usize) {
+/// btop-style Esc menu: the pova logo banner above the options.
+fn draw_menu(f: &mut Frame, app: &mut App, area: Rect, selected: usize) {
     let t = app.theme.clone();
-    let entries = page.items();
-    let items: Vec<String> = entries.iter().map(|i| app.menu_label(*i)).collect();
-    let heading = match page {
-        MenuPage::Main => None,
-        MenuPage::Configs => Some("configs"),
-    };
-    let about = (page != MenuPage::Main)
-        .then(|| entries.get(selected).map(|i| i.description()))
-        .flatten();
+    let items: Vec<String> = MenuItem::ALL.iter().map(|i| app.menu_label(*i)).collect();
     let items_w = items
         .iter()
         .map(|s| Span::raw(s.as_str()).width() as u16)
         .max()
         .unwrap_or(10)
         + 6;
-    // Heading + blank line above the items, blank + description below.
-    let extra_h = heading.map_or(0, |_| 2) + about.map_or(0, |_| 2);
-    let items_h = items.len() as u16 + extra_h;
+    let items_h = items.len() as u16;
     // Largest banner that fits, or none on tiny terminals.
     let scale = [2usize, 1]
         .into_iter()
         .find(|&s| banner::width(s) + 4 <= area.width && (s as u16 * 4 + 2) + items_h + 6 <= area.height);
     let logo = scale.map(banner::lines).unwrap_or_default();
     let logo_w = scale.map(banner::width).unwrap_or(0);
-    let about_w = about.map_or(0, |a| Span::raw(a).width() as u16 + 4);
-    let panel_w = (logo_w.max(items_w).max(about_w) + 4).min(area.width);
+    let panel_w = logo_w.max(items_w) + 4;
     let panel_h = logo.len() as u16 + items_h + 5;
     let r = centered(area, panel_w, panel_h);
     f.render_widget(Clear, r);
@@ -275,20 +263,6 @@ fn draw_menu(f: &mut Frame, app: &mut App, area: Rect, page: MenuPage, selected:
     }
     y += 1;
     let accent = banner::gradient(0.5);
-    if let Some(h) = heading
-        && y < bottom
-    {
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("─┐", Style::new().fg(t.hi_fg)),
-                Span::styled(h, Style::new().fg(t.title).add_modifier(Modifier::BOLD)),
-                Span::styled("┌─", Style::new().fg(t.hi_fg)),
-            ]))
-            .alignment(Alignment::Center),
-            Rect::new(r.x, y, r.width, 1),
-        );
-        y += 2;
-    }
     for (i, label) in items.iter().enumerate() {
         if y >= bottom {
             break;
@@ -306,22 +280,7 @@ fn draw_menu(f: &mut Frame, app: &mut App, area: Rect, page: MenuPage, selected:
         f.render_widget(Paragraph::new(format!("   {label}")).style(style), row);
         y += 1;
     }
-    if let Some(a) = about {
-        y += 1;
-        if y < bottom {
-            f.render_widget(
-                Paragraph::new(a)
-                    .alignment(Alignment::Center)
-                    .style(Style::new().fg(t.graph_text)),
-                Rect::new(r.x + 1, y, r.width.saturating_sub(2), 1),
-            );
-        }
-        y += 1;
-    }
-    let hint = match page {
-        MenuPage::Main => "↑↓ select · enter/←→ change · esc close",
-        _ => "↑↓ select · enter/←→ change · esc back",
-    };
+    let hint = "↑↓ select · enter/←→ change · esc close";
     if y + 1 < bottom {
         f.render_widget(
             Paragraph::new(hint)

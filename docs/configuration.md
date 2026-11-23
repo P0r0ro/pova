@@ -33,8 +33,8 @@ next = ["N", "ctrl+right"]
 pova remembers your last theme, volume, visualizer mode, box layout and menu
 settings in `~/.local/state/pova/state.toml`.
 
-**Even loudness and notifications** can also be switched in pova itself:
-`esc`, then **Configs**. What you pick there wins over `config.toml`.
+**Even loudness and notifications** can also be switched in pova's `esc`
+menu. What you pick there wins over `config.toml`.
 
 - `normalize_loudness` runs mpv's loudness filter (EBU R128, aiming at the
   -14 LUFS YouTube itself uses), so a quiet acoustic song and a loud master

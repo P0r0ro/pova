@@ -10,8 +10,8 @@
   song changes, replacing the previous one. Off by default (`notifications`);
   needs `notify-send` from libnotify.
 - **Up next.** Now Playing shows the song that plays after the current one.
-- **Configs page in the Esc menu.** Even loudness and notifications are
-  switched on and off there, live, and remembered between runs.
+- **Two new switches in the Esc menu**, under Album art: Even loudness and
+  Notifications. They change live and are remembered between runs.
 
 ## 1.1.2 — smoother first run, offline recovery
 

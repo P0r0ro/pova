@@ -538,7 +538,7 @@ mod tests {
     use crate::model::{AlbumRef, Item, Track};
 
     #[test]
-    fn configs_page_and_up_next_render() {
+    fn menu_toggles_and_up_next_render() {
         let screen = |app: &mut App| {
             let mut term = Terminal::new(TestBackend::new(150, 42)).unwrap();
             term.draw(|f| {
@@ -556,15 +556,9 @@ mod tests {
 
         app.overlay = Some(Overlay::Menu {
             state: Default::default(),
-            page: crate::app::MenuPage::Configs,
         });
-        let cfg = screen(&mut app);
-        assert!(cfg.contains("configs") && cfg.contains("Even loudness") && cfg.contains("Notifications"));
-        assert!(
-            cfg.contains("same loudness"),
-            "description of the selected option missing"
-        );
-        assert!(cfg.contains("esc back"));
+        let menu = screen(&mut app);
+        assert!(menu.contains("Even loudness") && menu.contains("Notifications"));
     }
 
     fn track(i: usize) -> Track {
@@ -687,7 +681,6 @@ mod tests {
                     0 => Overlay::Help { scroll: 5 },
                     1 => Overlay::Menu {
                         state: Default::default(),
-                        page: Default::default(),
                     },
                     _ => Overlay::Themes {
                         names: vec![("Default".into(), None)],
@@ -753,7 +746,6 @@ mod tests {
         app.art.as_mut().unwrap().update_resized_protocol(done);
         app.overlay = Some(Overlay::Menu {
             state: Default::default(),
-            page: Default::default(),
         });
         term.draw(|f| {
             draw(f, &mut app);
@@ -783,7 +775,6 @@ mod tests {
         let mut app = app();
         app.overlay = Some(Overlay::Menu {
             state: Default::default(),
-            page: Default::default(),
         });
         let mut term = Terminal::new(TestBackend::new(150, 42)).unwrap();
         term.draw(|f| {

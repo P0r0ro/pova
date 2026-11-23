@@ -202,7 +202,6 @@ pub enum Overlay {
     },
     Menu {
         state: TableState,
-        page: MenuPage,
     },
     /// Yes / No question before something that can't be undone.
     Confirm {
@@ -236,56 +235,30 @@ pub enum MenuItem {
     VizMode,
     Autoplay,
     AlbumArt,
-    /// Opens the Configs page.
-    Configs,
-    Help,
-    Quit,
-    // On the Configs page:
     Loudness,
     Notifications,
+    Help,
+    Quit,
 }
 
 impl MenuItem {
+    pub const ALL: [MenuItem; 8] = [
+        MenuItem::Themes,
+        MenuItem::VizMode,
+        MenuItem::Autoplay,
+        MenuItem::AlbumArt,
+        MenuItem::Loudness,
+        MenuItem::Notifications,
+        MenuItem::Help,
+        MenuItem::Quit,
+    ];
+
     /// A setting that changes in place with enter / ← → (the menu stays open).
     pub fn is_setting(self) -> bool {
         matches!(
             self,
             MenuItem::VizMode | MenuItem::Autoplay | MenuItem::AlbumArt | MenuItem::Loudness | MenuItem::Notifications
         )
-    }
-
-    /// One line explaining the selected entry (Configs page).
-    pub fn description(self) -> &'static str {
-        match self {
-            MenuItem::Loudness => "Plays every song at the same loudness, so you don't reach for the volume.",
-            MenuItem::Notifications => "A desktop notification with the cover art when the song changes.",
-            _ => "",
-        }
-    }
-}
-
-/// Which page of the Esc menu is open.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum MenuPage {
-    #[default]
-    Main,
-    Configs,
-}
-
-impl MenuPage {
-    pub fn items(self) -> &'static [MenuItem] {
-        match self {
-            MenuPage::Main => &[
-                MenuItem::Themes,
-                MenuItem::VizMode,
-                MenuItem::Autoplay,
-                MenuItem::AlbumArt,
-                MenuItem::Configs,
-                MenuItem::Help,
-                MenuItem::Quit,
-            ],
-            MenuPage::Configs => &[MenuItem::Loudness, MenuItem::Notifications],
-        }
     }
 }
 
@@ -465,7 +438,7 @@ pub struct App {
     notified: Option<String>,
     /// Disliked last song waiting for autoplay songs to skip to.
     skip_disliked: Option<String>,
-    /// Even loudness / notifications as last picked in Esc → Configs; None
+    /// Even loudness / notifications as last picked in the Esc menu; None
     /// until then, so config.toml keeps deciding.
     picked_loudness: Option<bool>,
     picked_notifications: Option<bool>,
@@ -592,15 +565,14 @@ impl App {
     pub fn menu_label(&self, item: MenuItem) -> String {
         let on_off = |b: bool| if b { "on" } else { "off" };
         match item {
-            MenuItem::Themes => format!("Theme        ‹ {} ›", self.theme.name),
-            MenuItem::VizMode => format!("Visualizer   ‹ {} ›", self.viz_mode.label()),
-            MenuItem::Autoplay => format!("Autoplay     ‹ {} ›", on_off(self.cfg.autoplay)),
-            MenuItem::AlbumArt => format!("Album art    ‹ {} ›", on_off(self.cfg.album_art)),
-            MenuItem::Configs => "Configs      ›".into(),
+            MenuItem::Themes => format!("Theme          ‹ {} ›", self.theme.name),
+            MenuItem::VizMode => format!("Visualizer     ‹ {} ›", self.viz_mode.label()),
+            MenuItem::Autoplay => format!("Autoplay       ‹ {} ›", on_off(self.cfg.autoplay)),
+            MenuItem::AlbumArt => format!("Album art      ‹ {} ›", on_off(self.cfg.album_art)),
+            MenuItem::Loudness => format!("Even loudness  ‹ {} ›", on_off(self.cfg.normalize_loudness)),
+            MenuItem::Notifications => format!("Notifications  ‹ {} ›", on_off(self.cfg.notifications)),
             MenuItem::Help => "Help".into(),
             MenuItem::Quit => "Quit".into(),
-            MenuItem::Loudness => format!("Even loudness    ‹ {} ›", on_off(self.cfg.normalize_loudness)),
-            MenuItem::Notifications => format!("Notifications    ‹ {} ›", on_off(self.cfg.notifications)),
         }
     }
 
@@ -609,7 +581,6 @@ impl App {
             MenuItem::Themes => self.open_themes(),
             MenuItem::Help => self.overlay = Some(Overlay::Help { scroll: 0 }),
             MenuItem::Quit => self.quit = true,
-            MenuItem::Configs => self.open_menu(MenuPage::Configs, 0),
             MenuItem::Loudness => {
                 self.cfg.normalize_loudness = !self.cfg.normalize_loudness;
                 self.picked_loudness = Some(self.cfg.normalize_loudness);
@@ -2171,15 +2142,12 @@ impl App {
                 self.library.stack.pop();
             }
             Tab::Lyrics if self.lyrics_scroll.is_some() => self.lyrics_scroll = None,
-            _ => self.open_menu(MenuPage::Main, 0),
+            _ => {
+                let mut state = TableState::default();
+                state.select(Some(0));
+                self.overlay = Some(Overlay::Menu { state });
+            }
         }
-    }
-
-    /// Open the Esc menu on `page` with entry `selected` highlighted.
-    fn open_menu(&mut self, page: MenuPage, selected: usize) {
-        let mut state = TableState::default();
-        state.select(Some(selected));
-        self.overlay = Some(Overlay::Menu { state, page });
     }
 
     fn select(&mut self, mode: EnqueueMode) {
@@ -2599,23 +2567,16 @@ impl App {
                     _ => {}
                 }
             }
-            Overlay::Menu { state, page } => {
-                let page = *page;
-                let items = page.items();
+            Overlay::Menu { state } => {
+                let items = &MenuItem::ALL;
                 let len = items.len();
                 let cur = state.selected().unwrap_or(0).min(len - 1);
                 let item = items[cur];
                 match (k.code, action) {
-                    // Esc / ← on a sub-page goes back to the main page.
-                    (KeyCode::Esc | KeyCode::Left, _) if page != MenuPage::Main => {
-                        let at = MenuPage::Main.items().iter().position(|i| *i == MenuItem::Configs);
-                        self.open_menu(MenuPage::Main, at.unwrap_or(0));
-                    }
                     // Settings toggle in place (menu stays open, like btop's options).
                     (KeyCode::Enter | KeyCode::Left | KeyCode::Right, _) if item.is_setting() => {
                         self.activate_menu(item, k.code != KeyCode::Left);
                     }
-                    (KeyCode::Right, _) if item == MenuItem::Configs => self.activate_menu(item, true),
                     (KeyCode::Enter, _) | (_, Some(Action::Select)) => {
                         self.overlay = None;
                         self.activate_menu(item, true);
@@ -2663,8 +2624,8 @@ impl App {
                         self.preview_theme();
                     }
                 }
-                Overlay::Menu { state, page } => {
-                    let len = page.items().len();
+                Overlay::Menu { state } => {
+                    let len = MenuItem::ALL.len();
                     let cur = state.selected().unwrap_or(0);
                     let next = if down { (cur + 1) % len } else { (cur + len - 1) % len };
                     state.select(Some(next));
@@ -3247,12 +3208,8 @@ mod resolve_tests {
         let mut h = harness();
         h.app.dispatch(Action::Menu); // no list to go back in -> opens the menu
         assert!(matches!(h.app.overlay, Some(Overlay::Menu { .. })));
-        let autoplay = MenuPage::Main
-            .items()
-            .iter()
-            .position(|i| *i == MenuItem::Autoplay)
-            .unwrap();
-        if let Some(Overlay::Menu { state, .. }) = h.app.overlay.as_mut() {
+        let autoplay = MenuItem::ALL.iter().position(|i| *i == MenuItem::Autoplay).unwrap();
+        if let Some(Overlay::Menu { state }) = h.app.overlay.as_mut() {
             state.select(Some(autoplay));
         }
         let before = h.app.cfg.autoplay;
@@ -3266,7 +3223,7 @@ mod resolve_tests {
         let saved = State::load(&h.app.paths.state_file());
         assert_eq!(saved.autoplay, Some(!before));
         // Themes entry opens the theme picker.
-        if let Some(Overlay::Menu { state, .. }) = h.app.overlay.as_mut() {
+        if let Some(Overlay::Menu { state }) = h.app.overlay.as_mut() {
             state.select(Some(0));
         }
         h.app
@@ -3275,60 +3232,26 @@ mod resolve_tests {
     }
 
     #[test]
-    fn configs_page_toggles_loudness_and_goes_back() {
+    fn menu_toggles_loudness_live() {
         let mut h = harness();
-        let enter = || Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         h.app.dispatch(Action::Menu);
-        let configs = MenuPage::Main
-            .items()
-            .iter()
-            .position(|i| *i == MenuItem::Configs)
-            .unwrap();
-        if let Some(Overlay::Menu { state, .. }) = h.app.overlay.as_mut() {
-            state.select(Some(configs));
+        let at = MenuItem::ALL.iter().position(|i| *i == MenuItem::Loudness).unwrap();
+        assert_eq!(MenuItem::ALL[at - 1], MenuItem::AlbumArt, "sits under album art");
+        if let Some(Overlay::Menu { state }) = h.app.overlay.as_mut() {
+            state.select(Some(at));
         }
-        h.app.on_terminal(enter());
-        assert!(matches!(
-            h.app.overlay,
-            Some(Overlay::Menu {
-                page: MenuPage::Configs,
-                ..
-            })
-        ));
-        // First entry is loudness, on by default: enter turns it off, live.
         assert!(h.app.cfg.normalize_loudness);
         drain(&mut h.player);
-        h.app.on_terminal(enter());
+        h.app
+            .on_terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
         assert!(!h.app.cfg.normalize_loudness);
+        assert!(matches!(h.app.overlay, Some(Overlay::Menu { .. })), "menu stays open");
         assert!(
             drain(&mut h.player)
                 .iter()
                 .any(|c| matches!(c, PlayerCmd::SetNormalize(false)))
         );
         assert_eq!(State::load(&h.app.paths.state_file()).normalize_loudness, Some(false));
-        // ← goes back too (it doesn't flip the setting).
-        h.app.on_terminal(enter());
-        h.app
-            .on_terminal(Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)));
-        assert!(h.app.cfg.normalize_loudness);
-        assert!(matches!(
-            h.app.overlay,
-            Some(Overlay::Menu {
-                page: MenuPage::Main,
-                ..
-            })
-        ));
-        h.app.on_terminal(enter()); // back into Configs for the Esc check
-        // Esc goes back to the main page, on the Configs entry.
-        h.app
-            .on_terminal(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
-        match &h.app.overlay {
-            Some(Overlay::Menu { state, page }) => {
-                assert_eq!(*page, MenuPage::Main);
-                assert_eq!(state.selected(), Some(configs));
-            }
-            _ => panic!("menu closed instead of going back"),
-        }
     }
 
     #[test]
@@ -3431,12 +3354,8 @@ mod resolve_tests {
         let mut h = harness();
         h.app.viz_mode = VizMode::Bars;
         h.app.dispatch(Action::Menu);
-        let viz_idx = MenuPage::Main
-            .items()
-            .iter()
-            .position(|i| *i == MenuItem::VizMode)
-            .unwrap();
-        if let Some(Overlay::Menu { state, .. }) = h.app.overlay.as_mut() {
+        let viz_idx = MenuItem::ALL.iter().position(|i| *i == MenuItem::VizMode).unwrap();
+        if let Some(Overlay::Menu { state }) = h.app.overlay.as_mut() {
             state.select(Some(viz_idx));
         }
         h.app
