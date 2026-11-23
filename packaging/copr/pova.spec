@@ -5,7 +5,7 @@
 %global debug_package %{nil}
 
 Name:           pova
-Version:        1.0.1
+Version:        1.1.0
 Release:        1%{?dist}
 Summary:        YouTube Music in the terminal, with a cava visualizer and btop themes
 License:        MIT
@@ -60,5 +60,8 @@ install -Dm644 packaging/appimage/pova.png %{buildroot}%{_datadir}/icons/hicolor
 %{_datadir}/icons/hicolor/512x512/apps/pova.png
 
 %changelog
+* Mon Nov 23 2026 P0r0ro <250746769+P0r0ro@users.noreply.github.com> - 1.1.0-1
+- pova 1.1.0
+
 * Sun Nov 22 2026 P0r0ro <250746769+P0r0ro@users.noreply.github.com> - 1.0.1-1
 - First COPR build
