@@ -146,15 +146,116 @@ pub fn draw(f: &mut Frame, app: &mut App) -> usize {
             },
         );
     }
-    if app.overlay.is_some() {
+    let error = app.flash.as_ref().is_some_and(|f| f.error);
+    if app.overlay.is_some() || error {
         // Overlays cut through kitty image rows; re-anchor the cells beside them.
         let anchors = kitty_fix::Anchors::capture(f.buffer_mut());
         overlay::draw(f, app);
+        if error {
+            draw_error(f, app);
+        }
         if !anchors.is_empty() {
             anchors.repair(f.buffer_mut());
         }
     }
     want_bars
+}
+
+pub const ERROR_RED: Color = Color::Rgb(0xe0, 0x50, 0x50);
+
+/// Error box near the bottom of the screen: the full message, wrapped, so
+/// nothing is cut off. Esc or a click closes it; it also fades on its own.
+fn draw_error(f: &mut Frame, app: &mut App) {
+    let Some(flash) = app.flash.as_ref().filter(|f| f.error) else {
+        return;
+    };
+    let area = f.area();
+    if area.width < 20 || area.height < 5 {
+        return;
+    }
+    let width = area.width.saturating_sub(4).min(100);
+    let text_w = width.saturating_sub(4).max(1) as usize;
+    let lines = wrap_text(&flash.text, text_w);
+    let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
+    let r = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + area.height.saturating_sub(height + 1),
+        width,
+        height,
+    );
+    let t = &app.theme;
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(ERROR_RED))
+        .style(Style::new().bg(t.main_bg).fg(t.main_fg))
+        .title(Line::from(vec![
+            Span::styled("─┐", Style::new().fg(ERROR_RED)),
+            Span::styled("error", Style::new().fg(ERROR_RED).add_modifier(Modifier::BOLD)),
+            Span::styled("┌", Style::new().fg(ERROR_RED)),
+        ]))
+        .title_bottom(
+            Line::from(vec![
+                Span::styled("┐", Style::new().fg(ERROR_RED)),
+                Span::styled("esc closes", Style::new().fg(t.inactive_fg)),
+                Span::styled("┌─", Style::new().fg(ERROR_RED)),
+            ])
+            .alignment(Alignment::Right),
+        );
+    let inner = block.inner(r);
+    f.render_widget(ratatui::widgets::Clear, r);
+    f.render_widget(block, r);
+    let inner = Rect {
+        x: inner.x + 1,
+        width: inner.width.saturating_sub(2),
+        ..inner
+    };
+    let body: Vec<Line> = lines.into_iter().map(Line::from).collect();
+    f.render_widget(Paragraph::new(body).style(Style::new().fg(t.main_fg)), inner);
+    app.hits.add(r, Hit::CloseError);
+}
+
+/// Greedy word wrap that never drops text (long words are split).
+pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    for para in text.lines() {
+        let mut line = String::new();
+        for word in para.split_whitespace() {
+            let mut word = word.to_string();
+            loop {
+                let len = line.chars().count();
+                let wlen = word.chars().count();
+                let sep = usize::from(len > 0);
+                if len + sep + wlen <= width {
+                    if sep == 1 {
+                        line.push(' ');
+                    }
+                    line.push_str(&word);
+                    break;
+                }
+                if len > 0 {
+                    out.push(std::mem::take(&mut line));
+                    continue;
+                }
+                // A single word longer than the line: split it.
+                let head: String = word.chars().take(width).collect();
+                word = word.chars().skip(width).collect();
+                out.push(head);
+                if word.is_empty() {
+                    break;
+                }
+            }
+        }
+        out.push(line);
+    }
+    while out.last().is_some_and(String::is_empty) && out.len() > 1 {
+        out.pop();
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
 }
 
 fn draw_viz(f: &mut Frame, app: &mut App, area: Rect) -> usize {
@@ -232,15 +333,14 @@ fn draw_player(f: &mut Frame, app: &mut App, area: Rect) {
     let mut block = boxed(app, border)
         .title(Line::from(title))
         .title_bottom(Line::from(right).alignment(Alignment::Right));
-    if let Some(flash) = &app.flash {
-        let color = if flash.error {
-            Color::Rgb(0xe0, 0x50, 0x50)
-        } else {
-            t.accent
-        };
+    // Errors get their own box (draw_error) so the whole message is readable.
+    if let Some(flash) = app.flash.as_ref().filter(|f| !f.error) {
         block = block.title_bottom(Line::from(vec![
             Span::styled("─┐", Style::new().fg(border)),
-            Span::styled(flash.text.clone(), Style::new().fg(color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                flash.text.clone(),
+                Style::new().fg(t.accent).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("┌", Style::new().fg(border)),
         ]));
     }
@@ -698,5 +798,16 @@ mod tests {
         let transmit = symbols.iter().any(|s| s.contains("\x1b_G"));
         assert!(transmit, "kitty transmit escape (ESC _G) missing");
         assert!(placeholders > 50, "only {placeholders} kitty placeholder cells");
+    }
+
+    #[test]
+    fn wrap_keeps_every_word() {
+        let text = "Couldn't like the song: YouTube Music signed you out, run pova-import-cookie chrome";
+        let lines = wrap_text(text, 20);
+        assert!(lines.iter().all(|l| l.chars().count() <= 20));
+        assert_eq!(lines.join(" "), text);
+        // A word longer than the line is split, not dropped.
+        assert_eq!(wrap_text("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
+        assert_eq!(wrap_text("", 10), vec![""]);
     }
 }

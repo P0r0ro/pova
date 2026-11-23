@@ -137,22 +137,119 @@ macro_rules! with_yt {
 /// Max continuation pages fetched for long playlists (~100 tracks each).
 const MAX_PAGES: usize = 20;
 
+/// Shown when YouTube Music rejects the saved cookie.
+pub const SIGNED_OUT: &str = "YouTube Music signed you out: the saved login cookie has expired. \
+To sign back in, run `pova-import-cookie chrome` (or firefox) in another terminal. \
+pova picks up the new cookie by itself, no restart needed.";
+
 pub async fn run(cookie_file: PathBuf, mut reqs: UnboundedReceiver<YtmReq>, events: UnboundedSender<YtmEvent>) {
-    let client = connect(&cookie_file, &events).await;
-    let Some(client) = client else { return };
-    while let Some(req) = reqs.recv().await {
-        let client = client.clone();
-        let events = events.clone();
-        tokio::spawn(async move {
-            let ev = handle(&client, req).await;
-            let _ = events.send(ev);
-        });
+    let mut cookie_stamp = file_stamp(&cookie_file);
+    let Some(mut client) = connect(&cookie_file, &events).await else {
+        return;
+    };
+    // Requests run as separate tasks; one that finds the login rejected
+    // reports it here so the client can drop back to signed-out.
+    let (expired_tx, mut expired_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let mut watch = tokio::time::interval(std::time::Duration::from_secs(2));
+    watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            req = reqs.recv() => {
+                let Some(req) = req else { break };
+                let client = client.clone();
+                let events = events.clone();
+                let expired_tx = expired_tx.clone();
+                tokio::spawn(async move {
+                    let (ev, auth_rejected) = handle(&client, req).await;
+                    let _ = events.send(ev);
+                    if auth_rejected && matches!(client, Client::Auth(_)) {
+                        let _ = expired_tx.send(());
+                    }
+                });
+            }
+            Some(()) = expired_rx.recv() => {
+                if matches!(client, Client::Auth(_)) {
+                    tracing::warn!("login cookie rejected; continuing signed out");
+                    let _ = events.send(YtmEvent::Auth {
+                        logged_in: false,
+                        message: Some(SIGNED_OUT.into()),
+                    });
+                    if let Ok(yt) = YtMusic::new_unauthenticated().await {
+                        client = Client::Anon(yt);
+                    }
+                }
+            }
+            _ = watch.tick() => {
+                // A freshly imported cookie signs pova back in without a restart.
+                let stamp = file_stamp(&cookie_file);
+                if stamp != cookie_stamp {
+                    cookie_stamp = stamp;
+                    if stamp.is_some() {
+                        tracing::info!("cookie file changed; reconnecting");
+                        if let Some(c) = connect(&cookie_file, &events).await {
+                            client = c;
+                        }
+                    }
+                }
+            }
+        }
     }
+}
+
+/// Whether YouTube treats this client as signed in, from the `logged_in`
+/// flag it puts in every response. None if the check itself failed.
+async fn login_state(yt: &YtMusic<BrowserToken>) -> Option<bool> {
+    use ytmapi_rs::query::GetLibraryPlaylistsQuery;
+    let raw = yt.raw_json_query(GetLibraryPlaylistsQuery).await;
+    match raw {
+        Ok(raw) => {
+            let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+            let state = find_logged_in(&json);
+            tracing::debug!("login check: logged_in = {state:?}");
+            state
+        }
+        Err(e) => {
+            tracing::debug!("login check failed: {e}");
+            let (_, rejected) = explain(&e.to_string());
+            if rejected { Some(false) } else { None }
+        }
+    }
+}
+
+/// Finds `{"key": "logged_in", "value": "0" | "1"}` anywhere in a response.
+fn find_logged_in(v: &serde_json::Value) -> Option<bool> {
+    match v {
+        serde_json::Value::Object(map) => {
+            if map.get("key").and_then(serde_json::Value::as_str) == Some("logged_in") {
+                return match map.get("value").and_then(serde_json::Value::as_str) {
+                    Some("1") => Some(true),
+                    Some("0") => Some(false),
+                    _ => None,
+                };
+            }
+            map.values().find_map(find_logged_in)
+        }
+        serde_json::Value::Array(items) => items.iter().find_map(find_logged_in),
+        _ => None,
+    }
+}
+
+fn file_stamp(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 async fn connect(cookie_file: &PathBuf, events: &UnboundedSender<YtmEvent>) -> Option<Client> {
     if cookie_file.exists() {
         match YtMusic::from_cookie_file(cookie_file).await {
+            // An expired cookie often isn't refused outright: YouTube just
+            // answers as if signed out. Check before claiming "signed in".
+            Ok(yt) if login_state(&yt).await == Some(false) => {
+                tracing::warn!("cookie accepted but YouTube reports logged_in=0");
+                let _ = events.send(YtmEvent::Auth {
+                    logged_in: false,
+                    message: Some(SIGNED_OUT.into()),
+                });
+            }
             Ok(yt) => {
                 let _ = events.send(YtmEvent::Auth {
                     logged_in: true,
@@ -164,7 +261,11 @@ async fn connect(cookie_file: &PathBuf, events: &UnboundedSender<YtmEvent>) -> O
                 tracing::warn!("cookie auth failed: {e}");
                 let _ = events.send(YtmEvent::Auth {
                     logged_in: false,
-                    message: Some(format!("Cookie login failed ({e}); continuing signed out")),
+                    message: Some(format!(
+                        "Couldn't sign in with the saved cookie ({}). Continuing signed out; \
+                         run `pova-import-cookie chrome` to sign in again.",
+                        explain(&e.to_string()).0
+                    )),
                 });
             }
         }
@@ -183,22 +284,33 @@ async fn connect(cookie_file: &PathBuf, events: &UnboundedSender<YtmEvent>) -> O
             tracing::error!("ytm connect failed: {e}");
             let _ = events.send(YtmEvent::Failed {
                 token: None,
-                message: format!("Could not reach YouTube Music: {e}"),
+                message: format!("Couldn't reach YouTube Music: {}", explain(&e.to_string()).0),
             });
             None
         }
     }
 }
 
-async fn handle(client: &Client, req: YtmReq) -> YtmEvent {
-    match req {
+/// Run one request. The flag is true when YouTube Music rejected the login.
+async fn handle(client: &Client, req: YtmReq) -> (YtmEvent, bool) {
+    let mut rejected = false;
+    let mut fail = |context: &str, e: &dyn std::fmt::Display| {
+        let (text, auth) = explain(&format!("{e:#}"));
+        rejected |= auth;
+        if context.is_empty() {
+            text
+        } else {
+            format!("{context}: {text}")
+        }
+    };
+    let ev = match req {
         YtmReq::Load { token, view } => match load(client, &view).await {
             Ok((title, items)) => YtmEvent::Loaded { token, title, items },
             Err(e) => {
                 tracing::warn!("load {view:?}: {e:#}");
                 YtmEvent::Failed {
                     token: Some(token),
-                    message: format!("{e:#}"),
+                    message: fail("", &e),
                 }
             }
         },
@@ -225,16 +337,19 @@ async fn handle(client: &Client, req: YtmReq) -> YtmEvent {
                 },
                 Err(e) => YtmEvent::Failed {
                     token: None,
-                    message: format!("Radio failed: {e}"),
+                    message: fail("Couldn't start radio", &e),
                 },
             }
         }
         YtmReq::Rate { video_id, liked } => {
             let Client::Auth(yt) = client else {
-                return YtmEvent::Failed {
+                let ev = YtmEvent::Failed {
                     token: None,
-                    message: "Liking songs needs a cookie login (see README)".into(),
+                    message: "Liking songs needs you to be signed in. Run `pova-import-cookie chrome` \
+                              (or firefox) in another terminal, then try again."
+                        .into(),
                 };
+                return (ev, false);
             };
             let status = if liked {
                 LikeStatus::Liked
@@ -245,7 +360,14 @@ async fn handle(client: &Client, req: YtmReq) -> YtmEvent {
                 Ok(()) => YtmEvent::Rated { video_id, liked },
                 Err(e) => YtmEvent::Failed {
                     token: None,
-                    message: format!("Like failed: {e}"),
+                    message: fail(
+                        if liked {
+                            "Couldn't like the song"
+                        } else {
+                            "Couldn't remove the like"
+                        },
+                        &e,
+                    ),
                 },
             }
         }
@@ -274,13 +396,65 @@ async fn handle(client: &Client, req: YtmReq) -> YtmEvent {
             };
             YtmEvent::Suggestions { query, items }
         }
+    };
+    (ev, rejected)
+}
+
+/// Turn a ytmapi-rs or network error into a sentence a person can act on.
+/// The flag is true when YouTube Music rejected the login (expired cookie).
+pub fn explain(raw: &str) -> (String, bool) {
+    let lower = raw.to_lowercase();
+    if lower.contains("must be signed in")
+        || lower.contains("error code 401")
+        || lower.contains("not logged in")
+        || lower.contains("login required")
+    {
+        return (SIGNED_OUT.to_string(), true);
     }
+    if lower.contains("needs you to be signed in") {
+        return (raw.to_string(), false);
+    }
+    if lower.contains("error sending request")
+        || lower.contains("dns error")
+        || lower.contains("failed to lookup")
+        || lower.contains("connection refused")
+        || lower.contains("connection reset")
+        || lower.contains("timed out")
+        || lower.contains("network is unreachable")
+    {
+        return (
+            "couldn't reach YouTube Music. Check your internet connection and try again.".into(),
+            false,
+        );
+    }
+    // "Http error code 429 recieved in response. Message: <...>."
+    if let Some(rest) = raw.split("Http error code ").nth(1) {
+        let code: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        let message = rest
+            .split_once('<')
+            .and_then(|(_, m)| m.rsplit_once('>'))
+            .map(|(m, _)| m.trim().trim_end_matches('.'))
+            .filter(|m| !m.is_empty());
+        let hint = match code.as_str() {
+            "429" => " YouTube is rate-limiting requests; wait a minute and try again.",
+            "403" => " YouTube refused the request; signing in again may help (`pova-import-cookie chrome`).",
+            c if c.starts_with('5') => " YouTube Music is having trouble; try again in a moment.",
+            _ => "",
+        };
+        return match message {
+            Some(m) => (format!("YouTube Music answered with error {code}: {m}.{hint}"), false),
+            None => (format!("YouTube Music answered with error {code}.{hint}"), false),
+        };
+    }
+    (raw.to_string(), false)
 }
 
 fn need_auth(client: &Client) -> anyhow::Result<&YtMusic<BrowserToken>> {
     match client {
         Client::Auth(yt) => Ok(yt),
-        Client::Anon(_) => anyhow::bail!("Library needs a cookie login — see README (~/.config/pova/cookie.txt)"),
+        Client::Anon(_) => anyhow::bail!(
+            "Your library needs you to be signed in. Run `pova-import-cookie chrome` (or firefox) in another terminal; pova signs in by itself once the cookie is saved."
+        ),
     }
 }
 
@@ -665,6 +839,7 @@ mod tests {
             },
         )
         .await
+        .0
         {
             YtmEvent::Radio { tracks, .. } => {
                 println!("radio: {} tracks", tracks.len());
@@ -679,6 +854,7 @@ mod tests {
             },
         )
         .await
+        .0
         {
             YtmEvent::Lyrics { text, .. } => {
                 println!("ytm lyrics: {:?}", text.map(|t| t.chars().take(60).collect::<String>()))
@@ -690,7 +866,7 @@ mod tests {
 
 #[cfg(test)]
 mod correction_tests {
-    use super::find_correction;
+    use super::{explain, find_correction};
 
     #[test]
     fn finds_did_you_mean_query() {
@@ -701,5 +877,36 @@ mod correction_tests {
         .unwrap();
         assert_eq!(find_correction(&json).as_deref(), Some("call me when you're sober"));
         assert_eq!(find_correction(&serde_json::json!({"a": [1, {"b": null}]})), None);
+    }
+
+    #[test]
+    fn reads_logged_in_flag() {
+        use super::find_logged_in;
+        let out = serde_json::json!({"responseContext": {"serviceTrackingParams": [
+            {"service": "GFEEDBACK", "params": [{"key": "logged_in", "value": "0"}]}]}});
+        assert_eq!(find_logged_in(&out), Some(false));
+        let inn = serde_json::json!({"a": [{"key": "logged_in", "value": "1"}]});
+        assert_eq!(find_logged_in(&inn), Some(true));
+        assert_eq!(find_logged_in(&serde_json::json!({"key": "other"})), None);
+    }
+
+    #[test]
+    fn explains_expired_login() {
+        let raw =
+            "Http error code 401 recieved in response. Message: <You must be signed in to perform this operation.>.";
+        let (text, auth) = explain(raw);
+        assert!(auth);
+        assert!(text.contains("pova-import-cookie"));
+    }
+
+    #[test]
+    fn explains_http_errors_readably() {
+        let (text, auth) = explain("Http error code 429 recieved in response. Message: <Too many requests>.");
+        assert!(!auth);
+        assert!(text.starts_with("YouTube Music answered with error 429: Too many requests."));
+        assert!(text.contains("wait a minute"));
+        let (text, _) = explain("error sending request for url (https://music.youtube.com/...)");
+        assert!(text.contains("internet connection"));
+        assert_eq!(explain("something odd").0, "something odd");
     }
 }

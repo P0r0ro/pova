@@ -412,7 +412,13 @@ fn browse(f: &mut Frame, app: &mut App, area: Rect, library: bool) {
     f.render_widget(Paragraph::new(Line::from(spans)), crumb);
 
     if let Some(err) = &lv.error {
-        centered_msg(f, body, &t, vec![Line::from(err.clone())]);
+        // Wrap here so the full message shows (centered_msg sizes by line count).
+        let width = body.width.saturating_sub(4).clamp(20, 90) as usize;
+        let lines = crate::ui::wrap_text(err, width)
+            .into_iter()
+            .map(|l| Line::from(Span::styled(l, Style::new().fg(crate::ui::ERROR_RED))))
+            .collect();
+        centered_msg(f, body, &t, lines);
         return;
     }
     if lv.loading && lv.items.is_empty() {

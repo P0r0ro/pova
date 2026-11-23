@@ -216,6 +216,7 @@ pub enum Hit {
     SearchFilter(SearchFilter),
     LibSection(LibSection),
     Suggestion(usize),
+    CloseError,
 }
 
 /// Clickable regions, rebuilt every frame.
@@ -312,6 +313,8 @@ pub struct App {
     pub picker: Option<Picker>,
     pub flash: Option<Flash>,
     pub logged_in: bool,
+    /// The first sign-in report arrived (later ones are re-logins).
+    auth_seen: bool,
     /// Like status per video id, from Liked songs + lists + likes made here.
     pub likes: HashMap<String, bool>,
     /// Liked songs finished loading (unknown status then means "not liked").
@@ -392,6 +395,7 @@ impl App {
             art_loading: false,
             picker,
             flash: None,
+            auth_seen: false,
             logged_in: false,
             likes: HashMap::new(),
             likes_loaded: false,
@@ -428,10 +432,16 @@ impl App {
         if error {
             tracing::warn!("{text}");
         }
+        // Errors stay long enough to read: 8 s plus a second per ~15 characters.
+        let secs = if error {
+            (8 + text.chars().count() as u64 / 15).min(30)
+        } else {
+            3
+        };
         self.flash = Some(Flash {
             text,
             error,
-            until: Instant::now() + Duration::from_secs(if error { 6 } else { 3 }),
+            until: Instant::now() + Duration::from_secs(secs),
         });
         self.dirty = true;
     }
@@ -915,7 +925,15 @@ impl App {
                 }
             }
             YtmEvent::Auth { logged_in, message } => {
+                let was = self.logged_in;
                 self.logged_in = logged_in;
+                if !logged_in {
+                    self.likes_loaded = false;
+                }
+                if logged_in && !was && self.auth_seen {
+                    self.flash("Signed in to YouTube Music", false);
+                }
+                self.auth_seen = true;
                 if logged_in {
                     // Learn what's already liked so ♥ shows and `f` toggles correctly.
                     let token = self.token();
@@ -1179,6 +1197,11 @@ impl App {
             self.quit = true;
             return;
         }
+        // Esc closes an error box first (it's drawn on top of everything).
+        if k.code == KeyCode::Esc && self.flash.as_ref().is_some_and(|f| f.error) {
+            self.flash = None;
+            return;
+        }
         if self.overlay.is_some() {
             self.on_overlay_key(k);
             return;
@@ -1436,7 +1459,11 @@ impl App {
             Like => {
                 let Some(t) = self.current() else { return };
                 if !self.logged_in {
-                    self.flash("Liking songs needs a cookie login (see README)", true);
+                    self.flash(
+                        "Liking songs needs you to be signed in. Run `pova-import-cookie chrome` \
+                         (or firefox) in another terminal; pova signs in by itself once it's saved.",
+                        true,
+                    );
                     return;
                 }
                 let known = self.likes_loaded || self.likes.contains_key(&t.video_id) || t.liked.is_some();
@@ -1827,6 +1854,10 @@ impl App {
                     }
                 }
                 Hit::LibSection(s) => self.switch_library(s),
+                Hit::CloseError => {
+                    self.flash = None;
+                    self.dirty = true;
+                }
                 Hit::Suggestion(i) => {
                     if let Some(text) = self.search.visible_suggestions().get(i).map(|x| x.text.clone()) {
                         self.search.cursor = text.chars().count();
