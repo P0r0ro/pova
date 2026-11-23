@@ -31,13 +31,16 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      # Packaging files (icon, desktop entry) from this workflow's own commit,
-      # so building an older tag by hand still gets them.
+      # Packaging files (icon, desktop entry) and the package test script from
+      # this workflow's own commit, so building an older tag by hand still
+      # gets them.
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}
           path: pkg
-          sparse-checkout: packaging
+          sparse-checkout: |
+            packaging
+            scripts
 
       - name: Version check
         # Every format is built from this one commit; refuse to publish if the
@@ -111,22 +114,10 @@ jobs:
       # Install each package on a clean system: proves its dependencies resolve
       # from the distro's own repositories and that everything lands in place.
       - name: Test the .rpm on Fedora
-        run: |
-          docker run --rm -v "$PWD:/w:ro" -e RPM fedora:latest bash -euc '
-            dnf install -y -q "/w/$RPM"
-            pova --version
-            for c in mpv yt-dlp pw-record pw-dump pova-import-cookie; do command -v "$c"; done
-            test -f /usr/share/applications/pova.desktop'
+        run: pkg/scripts/test-packages.sh rpm "$RPM" fedora:latest
 
       - name: Test the .deb on Ubuntu
-        run: |
-          docker run --rm -v "$PWD:/w:ro" -e DEB ubuntu:24.04 bash -euc '
-            export DEBIAN_FRONTEND=noninteractive
-            apt-get update -qq
-            apt-get install -y -qq "/w/$DEB" > /dev/null
-            pova --version
-            for c in mpv yt-dlp pw-record pw-dump pova-import-cookie; do command -v "$c"; done
-            test -f /usr/share/applications/pova.desktop'
+        run: pkg/scripts/test-packages.sh deb "$DEB" ubuntu:24.04
 
       - name: Upload to the release
         if: github.event_name == 'push' || inputs.publish
