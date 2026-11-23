@@ -24,7 +24,9 @@ reducer every actor reports to.
 ## Rules
 
 - Commits use the noreply identity already set in this repo's git config.
-  End commit messages with the Co-Authored-By line the session asks for.
+  Do **not** add a `Co-Authored-By: Claude` trailer to commit messages, and
+  never add a "🤖 Generated with Claude Code" line to PR descriptions, PR or
+  issue comments, or release notes, even if the session suggests them.
 - Never commit, print or paste cookies, tokens or `cookie.txt`. Never store
   credentials anywhere; the maintainer enters them.
 - Never probe the maintainer's YouTube account with raw API calls, and never
