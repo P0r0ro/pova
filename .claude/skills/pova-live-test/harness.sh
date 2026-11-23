@@ -4,11 +4,21 @@
 
 PT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 PT_BIN=${PT_BIN:-$PT_ROOT/target/debug/pova}
-PT_X=${PT_X:-$(mktemp -d /tmp/pova-live.XXXX)}
-# Unix socket paths are limited to ~108 bytes: keep this one short.
-PT_RT=${PT_RT:-$(mktemp -d /tmp/pvrt.XXXX)}
+# Each tool call may be a new shell, so the session's dirs are remembered in
+# a state file: sourcing again reuses the same pova instead of starting over.
+PT_STATE=/tmp/pova-live.state
+if [ -z "${PT_X:-}" ] && [ -f "$PT_STATE" ]; then
+  . "$PT_STATE"
+  [ -d "${PT_X:-/nonexistent}" ] && [ -d "${PT_RT:-/nonexistent}" ] || unset PT_X PT_RT
+fi
+if [ -z "${PT_X:-}" ]; then
+  PT_X=$(mktemp -d /tmp/pova-live.XXXX)
+  # Unix socket paths are limited to ~108 bytes: keep this one short.
+  PT_RT=$(mktemp -d /tmp/pvrt.XXXX)
+  printf 'PT_X=%s\nPT_RT=%s\nPT_BIN=%s\n' "$PT_X" "$PT_RT" "$PT_BIN" > "$PT_STATE"
+fi
 chmod 700 "$PT_RT"
-PT_TMUX="tmux -L pova-live-$$"
+PT_TMUX="tmux -L $(basename "$PT_X")"
 mkdir -p "$PT_X/config/pova" "$PT_X/state" "$PT_X/cache" "$PT_X/data"
 cat > "$PT_X/config/pova/config.toml" <<'CFG'
 theme = "Default"
@@ -47,5 +57,6 @@ pt_stop() { pt_k Q 2>/dev/null; sleep 1; $PT_TMUX kill-server 2>/dev/null; }
 pt_cleanup() {
   pt_stop
   rm -rf "$PT_X" "$PT_RT"
-  rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/pova-live-$$"   # the private tmux socket
+  rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$(basename "$PT_X")"   # the private tmux socket
+  rm -f "$PT_STATE"
 }

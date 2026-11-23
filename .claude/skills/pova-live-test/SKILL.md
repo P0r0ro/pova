@@ -40,4 +40,8 @@ is intentional: ask the maintainer to try features that need their account
 - `pt_P` sets the same env as the TUI, so remote commands never reach the
   maintainer's own pova.
 
+Each tool call can be a new shell: just source `harness.sh` again. It
+remembers the session in `/tmp/pova-live.state` and reuses the same pova.
+To test a different build, set `PT_BIN` before the first source.
+
 Always run `pt_stop` and `pt_cleanup` when done.

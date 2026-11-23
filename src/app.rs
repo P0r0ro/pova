@@ -2579,6 +2579,36 @@ pub mod tests_support {
     }
 }
 
+/// A fresh, private folder for one test App, so parallel tests never share
+/// state files. Folders from earlier test runs (dead processes) are removed
+/// the first time this runs, so nothing piles up in /tmp.
+#[cfg(test)]
+pub(crate) fn test_paths() -> Paths {
+    use std::sync::Once;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static CLEAN: Once = Once::new();
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let root = std::env::temp_dir().join("pova-tests");
+    let me = std::process::id();
+    CLEAN.call_once(|| {
+        for e in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let pid = name.split('-').next().and_then(|p| p.parse::<u32>().ok());
+            if pid.is_some_and(|p| p != me && !std::path::Path::new(&format!("/proc/{p}")).exists()) {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    });
+    let dir = root.join(format!("{me}-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
+    std::fs::create_dir_all(&dir).expect("test dir");
+    Paths {
+        config_dir: dir.clone(),
+        cache_dir: dir.clone(),
+        state_dir: dir.clone(),
+        runtime_dir: dir,
+    }
+}
+
 #[cfg(test)]
 mod search_tests {
     use super::*;
@@ -2590,13 +2620,7 @@ mod search_tests {
         let (y, yrx) = unbounded_channel();
         let (l, _) = unbounded_channel();
         let (a, _) = unbounded_channel();
-        let tmp = std::env::temp_dir().join("pova-search-test");
-        let paths = Paths {
-            config_dir: tmp.clone(),
-            cache_dir: tmp.clone(),
-            state_dir: tmp.clone(),
-            runtime_dir: tmp,
-        };
+        let paths = test_paths();
         let (keymap, _) = Keymap::new(&Default::default());
         let app = App::new(
             Config::default(),
@@ -2793,21 +2817,9 @@ mod resolve_tests {
     }
 
     fn harness() -> Harness {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static CASE: AtomicUsize = AtomicUsize::new(0);
         let (p, prx) = unbounded_channel();
         let (r, rrx) = unbounded_channel();
-        // Reuse one root dir across runs while isolating parallel tests.
-        let tmp = std::env::temp_dir()
-            .join("pova-resolve-test")
-            .join(format!("case-{}", CASE.fetch_add(1, Ordering::Relaxed)));
-        std::fs::create_dir_all(&tmp).unwrap();
-        let paths = Paths {
-            config_dir: tmp.clone(),
-            cache_dir: tmp.clone(),
-            state_dir: tmp.clone(),
-            runtime_dir: tmp,
-        };
+        let paths = test_paths();
         let (keymap, _) = Keymap::new(&Default::default());
         let channels = Channels {
             player: p,
@@ -3179,13 +3191,7 @@ mod playlist_tests {
 
     fn app() -> (App, UnboundedReceiver<YtmReq>) {
         let (y, yrx) = unbounded_channel();
-        let tmp = std::env::temp_dir().join("pova-playlist-test");
-        let paths = Paths {
-            config_dir: tmp.clone(),
-            cache_dir: tmp.clone(),
-            state_dir: tmp.clone(),
-            runtime_dir: tmp,
-        };
+        let paths = test_paths();
         let (keymap, _) = Keymap::new(&Default::default());
         let channels = Channels {
             player: unbounded_channel().0,
