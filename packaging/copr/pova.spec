@@ -14,7 +14,7 @@ Source0:        pova-%{version}.tar.gz
 Source1:        pova-%{version}-vendor.tar.gz
 
 ExclusiveArch:  x86_64 aarch64
-BuildRequires:  rust >= 1.88
+BuildRequires:  rust >= 1.90
 BuildRequires:  cargo
 
 Requires:       mpv
