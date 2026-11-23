@@ -161,11 +161,7 @@ impl SearchState {
             return None;
         }
         let n = case_insensitive_prefix_len(&top.text, &self.input)?;
-        if n < top.text.len() {
-            Some(&top.text[n..])
-        } else {
-            None
-        }
+        if n < top.text.len() { Some(&top.text[n..]) } else { None }
     }
 }
 
@@ -2010,7 +2006,9 @@ impl App {
         };
         let Some(lv) = stack.last() else { return };
         let Some(sel_idx) = lv.state.selected() else { return };
-        let Some(item) = lv.items.get(sel_idx).cloned() else { return };
+        let Some(item) = lv.items.get(sel_idx).cloned() else {
+            return;
+        };
         let view = lv.view.clone();
         let whole_list = matches!(view, View::Album(_) | View::Playlist(_) | View::LikedSongs);
         let list_tracks = lv.tracks();
@@ -3111,7 +3109,11 @@ mod resolve_tests {
         // Clicking a Header item in Search must not select it.
         let mut lv = ListView::new(View::Playlist("PL1".into()), 1);
         lv.loading = false;
-        lv.items = vec![Item::Header("Section".into()), Item::Track(track("a")), Item::Track(track("a"))];
+        lv.items = vec![
+            Item::Header("Section".into()),
+            Item::Track(track("a")),
+            Item::Track(track("a")),
+        ];
         lv.state.select(Some(2));
         h.app.tab = Tab::Search;
         h.app.search.stack.push(lv);
@@ -3133,7 +3135,8 @@ mod resolve_tests {
     #[test]
     fn missing_mpv_keeps_startup_error_and_does_not_spin_loading() {
         let mut h = harness();
-        h.app.on_player(PlayerEvent::Error("failed to start mpv (is it installed?)".into()));
+        h.app
+            .on_player(PlayerEvent::Error("failed to start mpv (is it installed?)".into()));
         h.app.on_player(PlayerEvent::Exited);
         assert!(
             h.app
@@ -3162,9 +3165,7 @@ mod resolve_tests {
         assert!(drain(&mut h.player).is_empty(), "pause while idle must not load");
         assert_eq!(h.app.on_control(crate::control::Command::Play), "ok");
         assert!(
-            drain(&mut h.player)
-                .iter()
-                .any(|c| matches!(c, PlayerCmd::Load { .. })),
+            drain(&mut h.player).iter().any(|c| matches!(c, PlayerCmd::Load { .. })),
             "play while idle should load the current track"
         );
     }

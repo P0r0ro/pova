@@ -550,8 +550,8 @@ mod dep_tests {
 
     #[test]
     fn suggests_exact_dnf_command_when_only_mpv_missing() {
-        let err = missing_deps_message(|b| matches!(b, "yt-dlp" | "pw-record" | "pw-dump" | "node" | "dnf"))
-            .unwrap_err();
+        let err =
+            missing_deps_message(|b| matches!(b, "yt-dlp" | "pw-record" | "pw-dump" | "node" | "dnf")).unwrap_err();
         assert!(err.contains("pova needs mpv to play music"));
         assert!(err.contains("sudo dnf install mpv\n"));
     }

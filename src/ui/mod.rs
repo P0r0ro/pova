@@ -269,7 +269,10 @@ fn draw_viz(f: &mut Frame, app: &mut App, area: Rect) -> usize {
     let right_w = spans_width(&right);
     if area.width > right_w + 2 {
         let rx = area.x + area.width - 1 - right_w;
-        app.hits.add(Rect::new(rx, area.y, right_w.saturating_sub(1), 1), Hit::Action(Action::VizMode));
+        app.hits.add(
+            Rect::new(rx, area.y, right_w.saturating_sub(1), 1),
+            Hit::Action(Action::VizMode),
+        );
     }
     let status = if app.viz_frame.active {
         Span::styled("● live", Style::new().fg(t.accent))
@@ -474,7 +477,8 @@ fn draw_controls(f: &mut Frame, app: &mut App, area: Rect) {
         // Click "vol" or the %/muted label to mute; click or scroll the meter to set volume.
         let vol_label_w = 4u16; // "vol "
         if vx + vol_label_w <= inner.x + inner.width {
-            app.hits.add(Rect::new(vx, vy, vol_label_w, 1), Hit::Action(Action::Mute));
+            app.hits
+                .add(Rect::new(vx, vy, vol_label_w, 1), Hit::Action(Action::Mute));
         }
         let meter_x = vx + vol_label_w;
         if meter_w > 1 && meter_x + meter_w <= inner.x + inner.width {

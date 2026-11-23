@@ -290,9 +290,8 @@ mod tests {
 
     #[test]
     fn parses_theme_lines() {
-        let m = parse_theme_file(
-            "# c\ntheme[main_bg]=\"#282a36\" # inline comment\ntheme[ title ] = \"#f8f8f2\"\njunk\n",
-        );
+        let m =
+            parse_theme_file("# c\ntheme[main_bg]=\"#282a36\" # inline comment\ntheme[ title ] = \"#f8f8f2\"\njunk\n");
         assert_eq!(m.get("main_bg"), Some(&Some((0x28, 0x2a, 0x36))));
         assert_eq!(m.get("title"), Some(&Some((0xf8, 0xf8, 0xf2))));
     }
