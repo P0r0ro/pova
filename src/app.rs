@@ -15,7 +15,7 @@ use crate::art::{ArtEvent, ArtReq};
 use crate::config::{Config, Paths, Session, State, VizMode};
 use crate::keymap::{Action, Keymap};
 use crate::lyrics::{Lyrics, LyricsEvent, LyricsReq};
-use crate::model::{Item, Track, video_id_from_url};
+use crate::model::{Item, PlaylistRef, Track, video_id_from_url};
 use crate::player::mpv::{PlayerCmd, PlayerEvent};
 use crate::player::queue::{Queue, Repeat};
 use crate::resolve::{ResolveReq, Resolved};
@@ -183,6 +183,15 @@ pub enum Overlay {
     Menu {
         state: TableState,
     },
+    /// Pick one of the user's playlists (or make a new one) for `track`.
+    AddToPlaylist {
+        track: Track,
+        /// None while loading.
+        playlists: Option<Vec<PlaylistRef>>,
+        state: TableState,
+        /// Some while typing a new playlist's name.
+        naming: Option<String>,
+    },
 }
 
 /// Entries of the Esc menu (btop-style options).
@@ -256,6 +265,8 @@ enum Pending {
     PlayFirst,
     /// The signed-in user's liked songs, for like status everywhere.
     LikedSet,
+    /// The user's playlists, for the add-to-playlist picker.
+    PlaylistPicker,
 }
 
 /// Is `track` liked? Known statuses (`likes`) win over what the list said.
@@ -1015,7 +1026,15 @@ impl App {
             }
             YtmEvent::Failed { token, message } => {
                 if let Some(token) = token {
-                    if let Some(Pending::LikedSet) = self.pending.remove(&token) {
+                    let pending = self.pending.remove(&token);
+                    if let Some(Pending::PlaylistPicker) = pending {
+                        if matches!(self.overlay, Some(Overlay::AddToPlaylist { .. })) {
+                            self.overlay = None;
+                        }
+                        self.flash(format!("Couldn't load your playlists: {message}"), true);
+                        return;
+                    }
+                    if let Some(Pending::LikedSet) = pending {
                         // Don't block `f` forever; fall back to known statuses.
                         tracing::warn!("loading liked songs failed: {message}");
                         self.likes_loaded = true;
@@ -1075,6 +1094,20 @@ impl App {
                     None => {}
                 }
             }
+            YtmEvent::PlaylistEdited { message, removed } => {
+                if let Some((playlist_id, video_id)) = removed {
+                    for lv in self.library.stack.iter_mut().chain(self.search.stack.iter_mut()) {
+                        if lv.view == View::Playlist(playlist_id.clone()) {
+                            let sel = lv.state.selected().unwrap_or(0);
+                            lv.items
+                                .retain(|i| !matches!(i, Item::Track(t) if t.video_id == video_id));
+                            lv.state
+                                .select((!lv.items.is_empty()).then(|| sel.min(lv.items.len() - 1)));
+                        }
+                    }
+                }
+                self.flash(message, false);
+            }
             YtmEvent::Rated { video_id, liked } => {
                 self.likes.insert(video_id.clone(), liked);
                 for e in &mut self.queue.entries {
@@ -1102,6 +1135,20 @@ impl App {
 
     fn on_loaded(&mut self, token: u64, title: String, items: Vec<Item>) {
         match self.pending.remove(&token) {
+            Some(Pending::PlaylistPicker) => {
+                if let Some(Overlay::AddToPlaylist { playlists, state, .. }) = self.overlay.as_mut() {
+                    let own: Vec<PlaylistRef> = items
+                        .into_iter()
+                        .filter_map(|i| match i {
+                            // Liked Music and Episodes aren't real playlists.
+                            Item::Playlist(p) if !matches!(p.id.trim_start_matches("VL"), "LM" | "SE") => Some(p),
+                            _ => None,
+                        })
+                        .collect();
+                    *playlists = Some(own);
+                    state.select(Some(0));
+                }
+            }
             Some(Pending::View) => {
                 if let Some(lv) = self.find_view(token) {
                     lv.loading = false;
@@ -1571,7 +1618,14 @@ impl App {
             Select => self.select(EnqueueMode::PlayNow),
             Append => self.select(EnqueueMode::Append),
             PlayNext => self.select(EnqueueMode::Next),
-            Remove => self.remove_selected(),
+            Remove => {
+                if self.tab == Tab::Library {
+                    self.remove_from_playlist();
+                } else {
+                    self.remove_selected();
+                }
+            }
+            AddToPlaylist => self.open_playlist_picker(),
             MoveUp | MoveDown => {
                 if self.tab == Tab::Queue
                     && let Some(i) = self.queue_state.selected()
@@ -1743,6 +1797,73 @@ impl App {
         }
     }
 
+    /// The track an action like "add to playlist" applies to: the selected
+    /// row in a list, otherwise the one playing.
+    fn target_track(&self) -> Option<Track> {
+        match self.tab {
+            Tab::Queue => self.queue_state.selected().and_then(|i| self.queue.get(i)).cloned(),
+            Tab::Search | Tab::Library => {
+                let stack = if self.tab == Tab::Search {
+                    &self.search.stack
+                } else {
+                    &self.library.stack
+                };
+                match stack.last().and_then(ListView::selected) {
+                    Some(Item::Track(t)) => Some(t.clone()),
+                    _ => None,
+                }
+            }
+            Tab::NowPlaying | Tab::Lyrics => self.current().cloned(),
+        }
+    }
+
+    fn open_playlist_picker(&mut self) {
+        if !self.logged_in {
+            self.flash(
+                "Playlists need you to be signed in. Run `pova-import-cookie chrome` (or firefox) \
+                 in another terminal; pova signs in by itself once it's saved.",
+                true,
+            );
+            return;
+        }
+        let Some(track) = self.target_track() else {
+            self.flash("Select a song first (or play one)", false);
+            return;
+        };
+        let token = self.token();
+        self.pending.insert(token, Pending::PlaylistPicker);
+        let _ = self.tx.ytm.send(YtmReq::Load {
+            token,
+            view: View::LibraryPlaylists,
+        });
+        self.overlay = Some(Overlay::AddToPlaylist {
+            track,
+            playlists: None,
+            state: TableState::default(),
+            naming: None,
+        });
+    }
+
+    /// `d` in the Library tab: take the selected song out of the open playlist.
+    fn remove_from_playlist(&mut self) {
+        let Some(lv) = self.library.stack.last() else { return };
+        let View::Playlist(playlist_id) = &lv.view else {
+            self.flash("Open one of your playlists to remove songs from it", false);
+            return;
+        };
+        if matches!(playlist_id.trim_start_matches("VL"), "LM") {
+            self.flash("To take a song out of Liked songs, unlike it with f", false);
+            return;
+        }
+        let Some(Item::Track(t)) = lv.selected() else { return };
+        let _ = self.tx.ytm.send(YtmReq::RemoveFromPlaylist {
+            playlist_id: playlist_id.clone(),
+            video_id: t.video_id.clone(),
+            title: t.title.clone(),
+        });
+        self.flash(format!("Removing “{}”…", t.title), false);
+    }
+
     fn remove_selected(&mut self) {
         if self.tab != Tab::Queue {
             return;
@@ -1837,6 +1958,65 @@ impl App {
                         state.select(Some(cur.saturating_sub(10)));
                         self.preview_theme();
                     }
+                    _ => {}
+                }
+            }
+            Overlay::AddToPlaylist {
+                track,
+                playlists,
+                state,
+                naming,
+            } => {
+                if let Some(name) = naming {
+                    match k.code {
+                        KeyCode::Esc => *naming = None,
+                        KeyCode::Backspace => {
+                            name.pop();
+                        }
+                        KeyCode::Enter => {
+                            let name = name.trim().to_string();
+                            if name.is_empty() {
+                                return;
+                            }
+                            let _ = self.tx.ytm.send(YtmReq::CreatePlaylist {
+                                name,
+                                video_id: track.video_id.clone(),
+                                title: track.title.clone(),
+                            });
+                            self.overlay = None;
+                            self.flash("Creating playlist…", false);
+                        }
+                        KeyCode::Char(c)
+                            if !k.modifiers.contains(KeyModifiers::CONTROL) && name.chars().count() < 150 =>
+                        {
+                            name.push(c);
+                        }
+                        _ => {}
+                    }
+                    return;
+                }
+                // Row 0 is "+ New playlist", then the user's playlists.
+                let len = playlists.as_ref().map_or(1, |p| p.len() + 1);
+                let cur = state.selected().unwrap_or(0).min(len - 1);
+                match (k.code, action) {
+                    (KeyCode::Esc, _) | (_, Some(Action::AddToPlaylist)) => self.overlay = None,
+                    (_, Some(Action::Down)) => state.select(Some((cur + 1) % len)),
+                    (_, Some(Action::Up)) => state.select(Some((cur + len - 1) % len)),
+                    (KeyCode::Enter, _) if cur == 0 => *naming = Some(String::new()),
+                    (KeyCode::Enter, _) => {
+                        if let Some(p) = playlists.as_ref().and_then(|p| p.get(cur - 1)) {
+                            let _ = self.tx.ytm.send(YtmReq::AddToPlaylist {
+                                playlist_id: p.id.clone(),
+                                playlist_title: p.title.clone(),
+                                video_id: track.video_id.clone(),
+                                title: track.title.clone(),
+                            });
+                            let msg = format!("Adding to {}…", p.title);
+                            self.overlay = None;
+                            self.flash(msg, false);
+                        }
+                    }
+                    (_, Some(Action::Quit)) => self.quit = true,
                     _ => {}
                 }
             }
@@ -2359,5 +2539,177 @@ mod resolve_tests {
         h.app
             .on_terminal(Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
         assert!(matches!(h.app.overlay, Some(Overlay::Themes { .. })));
+    }
+}
+
+#[cfg(test)]
+mod playlist_tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+
+    fn app() -> (App, UnboundedReceiver<YtmReq>) {
+        let (y, yrx) = unbounded_channel();
+        let tmp = std::env::temp_dir().join("pova-playlist-test");
+        let paths = Paths {
+            config_dir: tmp.clone(),
+            cache_dir: tmp.clone(),
+            state_dir: tmp.clone(),
+            runtime_dir: tmp,
+        };
+        let (keymap, _) = Keymap::new(&Default::default());
+        let channels = Channels {
+            player: unbounded_channel().0,
+            ytm: y,
+            lyrics: unbounded_channel().0,
+            art: unbounded_channel().0,
+            resolve: unbounded_channel().0,
+        };
+        let cfg = Config {
+            resume: false,
+            ..Config::default()
+        };
+        let app = App::new(cfg, paths, State::default(), keymap, channels, None, None);
+        (app, yrx)
+    }
+
+    fn track(id: &str) -> Track {
+        Track {
+            video_id: id.into(),
+            title: format!("Song {id}"),
+            artists: "Band".into(),
+            album: None,
+            album_id: None,
+            duration: Some(200.0),
+            thumbnail: None,
+            liked: None,
+        }
+    }
+
+    fn key(app: &mut App, code: KeyCode) {
+        app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    fn screen(app: &mut App) -> String {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| {
+            crate::ui::draw(f, app);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        buf.content().iter().map(|c| c.symbol()).collect()
+    }
+
+    fn reqs(rx: &mut UnboundedReceiver<YtmReq>) -> Vec<YtmReq> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    /// Open the picker on the playing track and answer its playlist load.
+    fn open_picker(app: &mut App, rx: &mut UnboundedReceiver<YtmReq>) {
+        app.logged_in = true;
+        app.queue.replace(vec![track("a")], 0);
+        app.tab = Tab::NowPlaying;
+        key(app, KeyCode::Char('p'));
+        let token = reqs(rx)
+            .into_iter()
+            .find_map(|r| match r {
+                YtmReq::Load {
+                    token,
+                    view: View::LibraryPlaylists,
+                } => Some(token),
+                _ => None,
+            })
+            .expect("picker asks for the user's playlists");
+        let pl = |id: &str, title: &str| {
+            Item::Playlist(PlaylistRef {
+                id: id.into(),
+                title: title.into(),
+                subtitle: "3 songs".into(),
+            })
+        };
+        app.on_ytm(YtmEvent::Loaded {
+            token,
+            title: String::new(),
+            items: vec![pl("LM", "Liked Music"), pl("PL1", "Road trip"), pl("PL2", "Gym")],
+        });
+    }
+
+    #[test]
+    fn picker_lists_own_playlists_and_adds() {
+        let (mut app, mut rx) = app();
+        open_picker(&mut app, &mut rx);
+        let shown = screen(&mut app);
+        assert!(shown.contains("add to playlist"));
+        assert!(shown.contains("Road trip") && shown.contains("Gym"));
+        assert!(!shown.contains("Liked Music"), "Liked Music is not a real playlist");
+        key(&mut app, KeyCode::Down); // past "+ New playlist"
+        key(&mut app, KeyCode::Enter);
+        assert!(app.overlay.is_none());
+        let sent = reqs(&mut rx);
+        assert!(
+            sent.iter()
+                .any(|r| matches!(r, YtmReq::AddToPlaylist { playlist_id, video_id, .. }
+                if playlist_id == "PL1" && video_id == "a")),
+            "{sent:?}"
+        );
+    }
+
+    #[test]
+    fn picker_creates_a_new_playlist() {
+        let (mut app, mut rx) = app();
+        open_picker(&mut app, &mut rx);
+        key(&mut app, KeyCode::Enter); // "+ New playlist"
+        for c in "Night drive".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        assert!(screen(&mut app).contains("Night drive"));
+        key(&mut app, KeyCode::Enter);
+        let sent = reqs(&mut rx);
+        assert!(
+            sent.iter()
+                .any(|r| matches!(r, YtmReq::CreatePlaylist { name, video_id, .. }
+                if name == "Night drive" && video_id == "a")),
+            "{sent:?}"
+        );
+    }
+
+    #[test]
+    fn signed_out_picker_explains_instead() {
+        let (mut app, mut rx) = app();
+        app.queue.replace(vec![track("a")], 0);
+        key(&mut app, KeyCode::Char('p'));
+        assert!(app.overlay.is_none());
+        assert!(
+            app.flash
+                .as_ref()
+                .is_some_and(|f| f.error && f.text.contains("pova-import-cookie"))
+        );
+        assert!(reqs(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn removing_from_own_playlist_updates_the_list() {
+        let (mut app, mut rx) = app();
+        app.logged_in = true;
+        app.tab = Tab::Library;
+        let mut lv = ListView::new(View::Playlist("PL1".into()), 7);
+        lv.items = vec![Item::Track(track("a")), Item::Track(track("b"))];
+        lv.state.select(Some(1));
+        app.library.stack.push(lv);
+        key(&mut app, KeyCode::Char('d'));
+        let sent = reqs(&mut rx);
+        assert!(
+            sent.iter()
+                .any(|r| matches!(r, YtmReq::RemoveFromPlaylist { playlist_id, video_id, .. }
+                if playlist_id == "PL1" && video_id == "b")),
+            "{sent:?}"
+        );
+        app.on_ytm(YtmEvent::PlaylistEdited {
+            message: "Removed".into(),
+            removed: Some(("PL1".into(), "b".into())),
+        });
+        let lv = app.library.stack.last().unwrap();
+        assert_eq!(lv.items.len(), 1);
+        assert_eq!(lv.state.selected(), Some(0));
     }
 }

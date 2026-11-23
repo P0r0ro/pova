@@ -105,6 +105,73 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             let state = *state;
             draw_menu(f, app, area, state.selected().unwrap_or(0));
         }
+        Overlay::AddToPlaylist {
+            track,
+            playlists,
+            state,
+            naming,
+        } => {
+            let rows_n = playlists.as_ref().map_or(2, |p| p.len() + 1) as u16;
+            let h = (rows_n + 4).min(area.height.saturating_sub(2)).max(7);
+            let r = centered(area, 56, h);
+            f.render_widget(Clear, r);
+            let hint = if naming.is_some() {
+                "┐enter create · esc back┌"
+            } else {
+                "┐enter add · esc close┌"
+            };
+            let block = frame(&t, "add to playlist").title_bottom(
+                Line::from(Span::styled(hint, Style::new().fg(t.inactive_fg))).alignment(Alignment::Right),
+            );
+            let inner = block.inner(r);
+            f.render_widget(block, r);
+            let inner = Rect {
+                x: inner.x + 1,
+                width: inner.width.saturating_sub(2),
+                ..inner
+            };
+            // Which song, on top.
+            let song = format!("“{}” · {}", track.title, track.artists);
+            f.render_widget(
+                Paragraph::new(song).style(Style::new().fg(t.title).add_modifier(Modifier::BOLD)),
+                Rect { height: 1, ..inner },
+            );
+            let body = Rect {
+                y: inner.y + 2,
+                height: inner.height.saturating_sub(2),
+                ..inner
+            };
+            if let Some(name) = naming {
+                let lines = vec![
+                    Line::from(Span::styled(
+                        "Name of the new private playlist:",
+                        Style::new().fg(t.inactive_fg),
+                    )),
+                    Line::from(vec![
+                        Span::styled(name.clone(), Style::new().fg(t.main_fg)),
+                        Span::styled("█", Style::new().fg(t.hi_fg)),
+                    ]),
+                ];
+                f.render_widget(Paragraph::new(lines), body);
+                return;
+            }
+            let mut rows = vec![Row::new(vec![
+                Cell::from("+ New playlist…").style(Style::new().fg(t.hi_fg)),
+            ])];
+            match playlists {
+                None => rows.push(Row::new(vec![
+                    Cell::from("loading your playlists…").style(Style::new().fg(t.inactive_fg)),
+                ])),
+                Some(list) => rows.extend(list.iter().map(|p| {
+                    Row::new(vec![
+                        Cell::from(p.title.as_str()),
+                        Cell::from(p.subtitle.as_str()).style(Style::new().fg(t.inactive_fg)),
+                    ])
+                })),
+            }
+            let table = Table::new(rows, [Constraint::Fill(1), Constraint::Length(20)]).row_highlight_style(sel);
+            f.render_stateful_widget(table, body, state);
+        }
     }
 }
 

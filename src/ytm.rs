@@ -75,6 +75,23 @@ pub enum YtmReq {
     Suggest {
         query: String,
     },
+    AddToPlaylist {
+        playlist_id: String,
+        playlist_title: String,
+        video_id: String,
+        title: String,
+    },
+    /// New private playlist containing one song.
+    CreatePlaylist {
+        name: String,
+        video_id: String,
+        title: String,
+    },
+    RemoveFromPlaylist {
+        playlist_id: String,
+        video_id: String,
+        title: String,
+    },
 }
 
 /// One autocomplete entry.
@@ -115,6 +132,11 @@ pub enum YtmEvent {
     Failed {
         token: Option<u64>,
         message: String,
+    },
+    /// A playlist edit worked. `removed` = (playlist id, video id).
+    PlaylistEdited {
+        message: String,
+        removed: Option<(String, String)>,
     },
 }
 
@@ -396,6 +418,83 @@ async fn handle(client: &Client, req: YtmReq) -> (YtmEvent, bool) {
             };
             YtmEvent::Suggestions { query, items }
         }
+        YtmReq::AddToPlaylist {
+            playlist_id,
+            playlist_title,
+            video_id,
+            title,
+        } => match need_auth(client) {
+            Err(e) => YtmEvent::Failed {
+                token: None,
+                message: e.to_string(),
+            },
+            Ok(yt) => {
+                let res = yt
+                    .add_video_items_to_playlist(
+                        PlaylistID::from_raw(bare_playlist_id(&playlist_id)),
+                        [VideoID::from_raw(video_id.clone())],
+                    )
+                    .await;
+                match res {
+                    Ok(_) => YtmEvent::PlaylistEdited {
+                        message: format!("Added “{title}” to {playlist_title}"),
+                        removed: None,
+                    },
+                    Err(e) => YtmEvent::Failed {
+                        token: None,
+                        message: fail(&format!("Couldn't add “{title}” to {playlist_title}"), &e),
+                    },
+                }
+            }
+        },
+        YtmReq::CreatePlaylist { name, video_id, title } => match need_auth(client) {
+            Err(e) => YtmEvent::Failed {
+                token: None,
+                message: e.to_string(),
+            },
+            Ok(yt) => {
+                use ytmapi_rs::query::playlist::{CreatePlaylistQuery, PrivacyStatus};
+                let query = CreatePlaylistQuery::new(&name, None, PrivacyStatus::Private)
+                    .with_video_ids([VideoID::from_raw(video_id.clone())]);
+                match yt.create_playlist(query).await {
+                    Ok(_) => YtmEvent::PlaylistEdited {
+                        message: format!("Created the private playlist {name} with “{title}”"),
+                        removed: None,
+                    },
+                    Err(e) => YtmEvent::Failed {
+                        token: None,
+                        message: fail(&format!("Couldn't create the playlist {name}"), &e),
+                    },
+                }
+            }
+        },
+        YtmReq::RemoveFromPlaylist {
+            playlist_id,
+            video_id,
+            title,
+        } => match need_auth(client) {
+            Err(e) => YtmEvent::Failed {
+                token: None,
+                message: e.to_string(),
+            },
+            Ok(yt) => match remove_from_playlist(yt, &playlist_id, &video_id).await {
+                Ok(true) => YtmEvent::PlaylistEdited {
+                    message: format!("Removed “{title}” from the playlist (p adds it back)"),
+                    removed: Some((playlist_id, video_id)),
+                },
+                Ok(false) => YtmEvent::Failed {
+                    token: None,
+                    message: format!(
+                        "Couldn't find “{title}” in the first page of this playlist (pova only \
+                         looks at the first ~100 songs for now). Remove it on music.youtube.com instead."
+                    ),
+                },
+                Err(e) => YtmEvent::Failed {
+                    token: None,
+                    message: fail(&format!("Couldn't remove “{title}”"), &e),
+                },
+            },
+        },
     };
     (ev, rejected)
 }
@@ -447,6 +546,47 @@ pub fn explain(raw: &str) -> (String, bool) {
         };
     }
     (raw.to_string(), false)
+}
+
+/// Playlist ids without the "VL" browse prefix (what the edit endpoints want).
+fn bare_playlist_id(id: &str) -> String {
+    id.strip_prefix("VL").unwrap_or(id).to_string()
+}
+
+/// Removing needs the song's per-playlist "setVideoId", which ytmapi-rs
+/// doesn't parse, so read it from the raw playlist page. Ok(false) when the
+/// song isn't on the first page.
+async fn remove_from_playlist(yt: &YtMusic<BrowserToken>, playlist_id: &str, video_id: &str) -> anyhow::Result<bool> {
+    use ytmapi_rs::common::SetVideoID;
+    let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw(format!("VL{}", bare_playlist_id(playlist_id))));
+    let raw = yt.raw_json_query(query).await?;
+    let json: serde_json::Value = serde_json::from_str(&raw)?;
+    let Some(set_id) = find_set_video_id(&json, video_id) else {
+        return Ok(false);
+    };
+    yt.remove_playlist_items(
+        PlaylistID::from_raw(bare_playlist_id(playlist_id)),
+        [SetVideoID::from_raw(set_id)],
+    )
+    .await?;
+    Ok(true)
+}
+
+/// `playlistItemData: {videoId, playlistSetVideoId}` for `video_id`.
+fn find_set_video_id(v: &serde_json::Value, video_id: &str) -> Option<String> {
+    match v {
+        serde_json::Value::Object(map) => {
+            if let Some(data) = map.get("playlistItemData")
+                && data.get("videoId").and_then(serde_json::Value::as_str) == Some(video_id)
+                && let Some(set) = data.get("playlistSetVideoId").and_then(serde_json::Value::as_str)
+            {
+                return Some(set.to_string());
+            }
+            map.values().find_map(|x| find_set_video_id(x, video_id))
+        }
+        serde_json::Value::Array(items) => items.iter().find_map(|x| find_set_video_id(x, video_id)),
+        _ => None,
+    }
 }
 
 fn need_auth(client: &Client) -> anyhow::Result<&YtMusic<BrowserToken>> {
@@ -877,6 +1017,19 @@ mod correction_tests {
         .unwrap();
         assert_eq!(find_correction(&json).as_deref(), Some("call me when you're sober"));
         assert_eq!(find_correction(&serde_json::json!({"a": [1, {"b": null}]})), None);
+    }
+
+    #[test]
+    fn finds_set_video_id() {
+        use super::{bare_playlist_id, find_set_video_id};
+        let json = serde_json::json!({"contents": [{"musicResponsiveListItemRenderer": {
+            "playlistItemData": {"videoId": "aaa", "playlistSetVideoId": "SET_A"}}},
+            {"musicResponsiveListItemRenderer": {
+            "playlistItemData": {"videoId": "bbb", "playlistSetVideoId": "SET_B"}}}]});
+        assert_eq!(find_set_video_id(&json, "bbb").as_deref(), Some("SET_B"));
+        assert_eq!(find_set_video_id(&json, "zzz"), None);
+        assert_eq!(bare_playlist_id("VLPL123"), "PL123");
+        assert_eq!(bare_playlist_id("PL123"), "PL123");
     }
 
     #[test]

@@ -34,6 +34,7 @@ actions! {
     Shuffle => "shuffle", "Toggle shuffle";
     Repeat => "repeat", "Cycle repeat (off / all / one)";
     Like => "like", "Like / unlike current track";
+    AddToPlaylist => "add_to_playlist", "Add selection (or current track) to a playlist";
     VizMode => "viz_mode", "Cycle visualizer mode";
     Themes => "themes", "Theme picker";
     Help => "help", "Show this help";
@@ -57,7 +58,7 @@ actions! {
     Select => "select", "Play / open selection";
     Append => "append", "Add selection to end of queue";
     PlayNext => "play_next", "Play selection next";
-    Remove => "remove", "Remove from queue";
+    Remove => "remove", "Remove from queue / from your playlist";
     MoveUp => "move_up", "Move queue item up";
     MoveDown => "move_down", "Move queue item down";
     Radio => "radio", "Start radio from selection";
@@ -211,6 +212,7 @@ fn defaults() -> Vec<(Action, &'static [&'static str])> {
         (Shuffle, &["S"]),
         (Repeat, &["R"]),
         (Like, &["f"]),
+        (AddToPlaylist, &["p"]),
         (VizMode, &["v"]),
         (Themes, &["t"]),
         (Help, &["?", "F1"]),
