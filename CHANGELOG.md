@@ -5,6 +5,11 @@
 - **apt repository** for Debian, Ubuntu, Linux Mint and Pop!_OS: add it once
   and pova updates with `sudo apt upgrade`. It serves the same signed `.deb`
   as the release page. See the README for the four setup lines.
+- **Fixed: Liked songs or a playlist failing with "Couldn't load".** One
+  unusual entry (a video whose channel name has no channel link) made the
+  whole list fail, and long lists could stop early. pova now reads such pages
+  leniently, skipping only entries that can't be played, and retries a page
+  that arrives cut off on a slow connection.
 
 ## 1.2.0 — even loudness, dislike, notifications
 
