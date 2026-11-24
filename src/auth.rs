@@ -65,24 +65,47 @@ pub fn open_in_browser(spec: &str) -> bool {
         None => (trimmed, None),
     };
     let browser_id = head.split('+').next().unwrap_or("").to_ascii_lowercase();
-    let (bins, chromium): (&[&str], bool) = match browser_id.as_str() {
-        "firefox" => (&["firefox"], false),
-        "chrome" => (&["google-chrome-stable", "google-chrome", "chrome"], true),
-        "chromium" => (&["chromium", "chromium-browser"], true),
-        "brave" => (&["brave-browser", "brave"], true),
-        "edge" => (&["microsoft-edge-stable", "microsoft-edge"], true),
-        "vivaldi" => (&["vivaldi-stable", "vivaldi"], true),
-        "opera" => (&["opera"], false),
-        _ => (&[], false),
+    let profile_lower = profile.unwrap_or("").to_ascii_lowercase();
+    let (bins, chromium): (&[&str], bool) = if profile_lower.contains("brave-origin") {
+        (&["brave-origin", "brave-origin-stable", "brave-browser", "brave"], true)
+    } else if profile_lower.contains("brave-browser-beta") {
+        (&["brave-browser-beta", "brave-browser"], true)
+    } else if profile_lower.contains("brave-browser-nightly") {
+        (&["brave-browser-nightly", "brave-browser"], true)
+    } else if profile_lower.contains("librewolf") {
+        (&["librewolf"], false)
+    } else if profile_lower.contains("zen") {
+        (&["zen-browser", "zen"], false)
+    } else if profile_lower.contains("floorp") {
+        (&["floorp"], false)
+    } else if profile_lower.contains("waterfox") {
+        (&["waterfox"], false)
+    } else {
+        match browser_id.as_str() {
+            "firefox" => (&["firefox"], false),
+            "chrome" => (&["google-chrome-stable", "google-chrome", "chrome"], true),
+            "chromium" => (&["chromium", "chromium-browser"], true),
+            "brave" => (&["brave-browser", "brave", "brave-origin"], true),
+            "edge" => (&["microsoft-edge-stable", "microsoft-edge"], true),
+            "vivaldi" => (&["vivaldi-stable", "vivaldi"], true),
+            "opera" => (&["opera"], false),
+            _ => (&[], false),
+        }
     };
+    let profile_dir_name = profile.and_then(|p| {
+        if p.contains('/') {
+            Path::new(p).file_name().and_then(|s| s.to_str())
+        } else {
+            Some(p)
+        }
+    });
     for bin in bins {
         if which(bin).is_some() {
             let mut cmd = std::process::Command::new(bin);
             if chromium
-                && let Some(prof) = profile
+                && let Some(prof) = profile_dir_name
                 && !prof.is_empty()
                 && !prof.starts_with('-')
-                && !prof.contains('/')
             {
                 cmd.arg(format!("--profile-directory={prof}"));
             }
@@ -112,26 +135,206 @@ pub fn open_in_browser(spec: &str) -> bool {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BrowserProfile {
-    /// Spec passed to `yt-dlp --cookies-from-browser`, e.g. `"brave:Profile 2"` or `"firefox"`.
+    /// Spec passed to `yt-dlp --cookies-from-browser`, e.g. `"brave:/home/.../Default"`.
     pub spec: String,
-    /// Human-readable label shown in the UI, e.g. `"Brave — Work"` or `"Firefox"`.
+    /// Human-readable label shown in the UI, e.g. `"Brave Origin — Personal"`.
     pub label: String,
     /// True if this is the desktop's default browser (and its default/last-used profile).
     pub default: bool,
 }
 
-const CHROMIUM_BROWSERS: [(&str, &str, &str, bool); 6] = [
-    ("brave", "Brave", "BraveSoftware/Brave-Browser", true),
-    ("chrome", "Chrome", "google-chrome", true),
-    ("chromium", "Chromium", "chromium", true),
-    ("edge", "Edge", "microsoft-edge", true),
-    ("vivaldi", "Vivaldi", "vivaldi", true),
-    ("opera", "Opera", "opera", false),
+struct ChromiumVariant {
+    /// Identifier matched against `mimeapps.list` default browser detection.
+    key: &'static str,
+    /// Browser name passed to `yt-dlp --cookies-from-browser`.
+    ytdlp_id: &'static str,
+    /// Display name shown in the UI.
+    name: &'static str,
+    /// Whether this browser stores multiple profiles in subdirectories.
+    supports_profiles: bool,
+    /// Relative paths under `$XDG_CONFIG_HOME`.
+    config_dirs: &'static [&'static str],
+    /// Relative paths under `$HOME` (Flatpak / Snap).
+    home_dirs: &'static [&'static str],
+}
+
+const CHROMIUM_VARIANTS: &[ChromiumVariant] = &[
+    ChromiumVariant {
+        key: "brave-origin",
+        ytdlp_id: "brave",
+        name: "Brave Origin",
+        supports_profiles: true,
+        config_dirs: &["BraveSoftware/Brave-Origin"],
+        home_dirs: &[".var/app/com.brave.Origin/config/BraveSoftware/Brave-Origin"],
+    },
+    ChromiumVariant {
+        key: "brave",
+        ytdlp_id: "brave",
+        name: "Brave",
+        supports_profiles: true,
+        config_dirs: &["BraveSoftware/Brave-Browser"],
+        home_dirs: &[
+            ".var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser",
+            "snap/brave/current/.config/BraveSoftware/Brave-Browser",
+        ],
+    },
+    ChromiumVariant {
+        key: "brave-beta",
+        ytdlp_id: "brave",
+        name: "Brave Beta",
+        supports_profiles: true,
+        config_dirs: &["BraveSoftware/Brave-Browser-Beta"],
+        home_dirs: &[],
+    },
+    ChromiumVariant {
+        key: "brave-nightly",
+        ytdlp_id: "brave",
+        name: "Brave Nightly",
+        supports_profiles: true,
+        config_dirs: &["BraveSoftware/Brave-Browser-Nightly"],
+        home_dirs: &[],
+    },
+    ChromiumVariant {
+        key: "chrome",
+        ytdlp_id: "chrome",
+        name: "Chrome",
+        supports_profiles: true,
+        config_dirs: &["google-chrome"],
+        home_dirs: &[".var/app/com.google.Chrome/config/google-chrome"],
+    },
+    ChromiumVariant {
+        key: "chrome-beta",
+        ytdlp_id: "chrome",
+        name: "Chrome Beta",
+        supports_profiles: true,
+        config_dirs: &["google-chrome-beta"],
+        home_dirs: &[],
+    },
+    ChromiumVariant {
+        key: "chrome-unstable",
+        ytdlp_id: "chrome",
+        name: "Chrome Dev",
+        supports_profiles: true,
+        config_dirs: &["google-chrome-unstable"],
+        home_dirs: &[],
+    },
+    ChromiumVariant {
+        key: "chromium",
+        ytdlp_id: "chromium",
+        name: "Chromium",
+        supports_profiles: true,
+        config_dirs: &["chromium"],
+        home_dirs: &[
+            ".var/app/org.chromium.Chromium/config/chromium",
+            "snap/chromium/common/chromium",
+        ],
+    },
+    ChromiumVariant {
+        key: "ungoogled-chromium",
+        ytdlp_id: "chromium",
+        name: "Ungoogled Chromium",
+        supports_profiles: true,
+        config_dirs: &["ungoogled-chromium"],
+        home_dirs: &[".var/app/io.github.ungoogled_software.ungoogled_chromium/config/chromium"],
+    },
+    ChromiumVariant {
+        key: "thorium",
+        ytdlp_id: "chromium",
+        name: "Thorium",
+        supports_profiles: true,
+        config_dirs: &["thorium"],
+        home_dirs: &[],
+    },
+    ChromiumVariant {
+        key: "edge",
+        ytdlp_id: "edge",
+        name: "Edge",
+        supports_profiles: true,
+        config_dirs: &["microsoft-edge"],
+        home_dirs: &[".var/app/com.microsoft.Edge/config/microsoft-edge"],
+    },
+    ChromiumVariant {
+        key: "edge-beta",
+        ytdlp_id: "edge",
+        name: "Edge Beta",
+        supports_profiles: true,
+        config_dirs: &["microsoft-edge-beta"],
+        home_dirs: &[],
+    },
+    ChromiumVariant {
+        key: "vivaldi",
+        ytdlp_id: "vivaldi",
+        name: "Vivaldi",
+        supports_profiles: true,
+        config_dirs: &["vivaldi"],
+        home_dirs: &[".var/app/com.vivaldi.Vivaldi/config/vivaldi"],
+    },
+    ChromiumVariant {
+        key: "vivaldi-snapshot",
+        ytdlp_id: "vivaldi",
+        name: "Vivaldi Snapshot",
+        supports_profiles: true,
+        config_dirs: &["vivaldi-snapshot"],
+        home_dirs: &[],
+    },
+    ChromiumVariant {
+        key: "opera",
+        ytdlp_id: "opera",
+        name: "Opera",
+        supports_profiles: false,
+        config_dirs: &["opera"],
+        home_dirs: &[],
+    },
+];
+
+struct FirefoxVariant {
+    key: &'static str,
+    name: &'static str,
+    config_dirs: &'static [&'static str],
+    home_dirs: &'static [&'static str],
+}
+
+const FIREFOX_VARIANTS: &[FirefoxVariant] = &[
+    FirefoxVariant {
+        key: "firefox",
+        name: "Firefox",
+        config_dirs: &["mozilla/firefox"],
+        home_dirs: &[
+            ".mozilla/firefox",
+            ".var/app/org.mozilla.firefox/config/mozilla/firefox",
+            ".var/app/org.mozilla.firefox/.mozilla/firefox",
+            "snap/firefox/common/.mozilla/firefox",
+        ],
+    },
+    FirefoxVariant {
+        key: "zen",
+        name: "Zen",
+        config_dirs: &["zen"],
+        home_dirs: &[".zen", ".var/app/app.zen_browser.zen/.zen"],
+    },
+    FirefoxVariant {
+        key: "librewolf",
+        name: "LibreWolf",
+        config_dirs: &[],
+        home_dirs: &[".librewolf", ".var/app/io.gitlab.librewolf-community/.librewolf"],
+    },
+    FirefoxVariant {
+        key: "floorp",
+        name: "Floorp",
+        config_dirs: &[],
+        home_dirs: &[".floorp", ".var/app/one.ablaze.floorp/.floorp"],
+    },
+    FirefoxVariant {
+        key: "waterfox",
+        name: "Waterfox",
+        config_dirs: &[],
+        home_dirs: &[".waterfox", ".var/app/net.waterfox.waterfox/.waterfox"],
+    },
 ];
 
 /// Detect installed Linux browsers and their individual user profiles by reading
 /// local browser metadata (`Local State` for Chromium/Brave, `profiles.ini` for
-/// Firefox). Fast, offline, and never touches keyrings or cookie databases.
+/// Firefox and forks). Fast, offline, and never touches keyrings or cookie DBs.
 pub fn detect_profiles() -> Vec<BrowserProfile> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let config_home = std::env::var_os("XDG_CONFIG_HOME")
@@ -139,49 +342,88 @@ pub fn detect_profiles() -> Vec<BrowserProfile> {
         .map(PathBuf::from)
         .or_else(|| home.as_ref().map(|h| h.join(".config")));
 
-    let default_id = detect_default_browser(home.as_deref(), config_home.as_deref());
+    let default_key = detect_default_browser(home.as_deref(), config_home.as_deref());
     let mut found: Vec<(bool, BrowserProfile)> = Vec::new();
 
     if let (Some(home), Some(cfg)) = (home.as_deref(), config_home.as_deref()) {
-        for p in detect_firefox_profiles(home, cfg, default_id == Some("firefox")) {
-            found.push((default_id == Some("firefox"), p));
-        }
-        for &(id, name, rel_dir, supports_profiles) in &CHROMIUM_BROWSERS {
-            let dir = cfg.join(rel_dir);
-            if !dir.is_dir() {
-                continue;
+        for v in FIREFOX_VARIANTS {
+            let is_default_browser = default_key == Some(v.key);
+            let roots: Vec<PathBuf> = v
+                .config_dirs
+                .iter()
+                .map(|d| cfg.join(d))
+                .chain(v.home_dirs.iter().map(|d| home.join(d)))
+                .collect();
+            for p in detect_firefox_profiles(&roots, v.name, is_default_browser) {
+                found.push((is_default_browser, p));
             }
-            let is_default_browser = default_id == Some(id);
-            if supports_profiles {
-                for p in detect_chromium_profiles(&dir, id, name, is_default_browser) {
-                    found.push((is_default_browser, p));
+        }
+        for v in CHROMIUM_VARIANTS {
+            let is_default_browser = default_key == Some(v.key);
+            let dirs: Vec<PathBuf> = v
+                .config_dirs
+                .iter()
+                .map(|d| cfg.join(d))
+                .chain(v.home_dirs.iter().map(|d| home.join(d)))
+                .filter(|d| d.is_dir())
+                .collect();
+            for dir in dirs {
+                if v.supports_profiles {
+                    for p in detect_chromium_profiles(&dir, v.ytdlp_id, v.name, is_default_browser) {
+                        found.push((is_default_browser, p));
+                    }
+                } else if has_chromium_cookies(&dir) {
+                    found.push((
+                        is_default_browser,
+                        BrowserProfile {
+                            spec: format!("{}:{}", v.ytdlp_id, dir.display()),
+                            label: v.name.to_string(),
+                            default: is_default_browser,
+                        },
+                    ));
                 }
-            } else {
-                found.push((
-                    is_default_browser,
-                    BrowserProfile {
-                        spec: id.to_string(),
-                        label: name.to_string(),
-                        default: is_default_browser,
-                    },
-                ));
             }
         }
     }
 
     if found.is_empty() {
-        let mut fallback = vec![BrowserProfile {
-            spec: "firefox".into(),
-            label: "Firefox".into(),
-            default: default_id == Some("firefox"),
-        }];
-        for &(id, name, _, _) in &CHROMIUM_BROWSERS {
-            fallback.push(BrowserProfile {
-                spec: id.to_string(),
-                label: name.to_string(),
-                default: default_id == Some(id),
-            });
-        }
+        let mut fallback = vec![
+            BrowserProfile {
+                spec: "firefox".into(),
+                label: "Firefox".into(),
+                default: default_key == Some("firefox"),
+            },
+            BrowserProfile {
+                spec: "brave".into(),
+                label: "Brave".into(),
+                default: matches!(default_key, Some("brave" | "brave-origin")),
+            },
+            BrowserProfile {
+                spec: "chrome".into(),
+                label: "Chrome".into(),
+                default: default_key == Some("chrome"),
+            },
+            BrowserProfile {
+                spec: "chromium".into(),
+                label: "Chromium".into(),
+                default: default_key == Some("chromium"),
+            },
+            BrowserProfile {
+                spec: "edge".into(),
+                label: "Edge".into(),
+                default: default_key == Some("edge"),
+            },
+            BrowserProfile {
+                spec: "vivaldi".into(),
+                label: "Vivaldi".into(),
+                default: default_key == Some("vivaldi"),
+            },
+            BrowserProfile {
+                spec: "opera".into(),
+                label: "Opera".into(),
+                default: default_key == Some("opera"),
+            },
+        ];
         fallback.sort_by_key(|p| !p.default);
         return fallback;
     }
@@ -191,22 +433,13 @@ pub fn detect_profiles() -> Vec<BrowserProfile> {
     found.into_iter().map(|(_, p)| p).collect()
 }
 
-fn detect_firefox_profiles(home: &Path, config_home: &Path, is_default_browser: bool) -> Vec<BrowserProfile> {
-    let roots = [
-        config_home.join("mozilla/firefox"),
-        home.join(".mozilla/firefox"),
-        home.join(".var/app/org.mozilla.firefox/config/mozilla/firefox"),
-        home.join(".var/app/org.mozilla.firefox/.mozilla/firefox"),
-        home.join("snap/firefox/common/.mozilla/firefox"),
-    ];
+fn detect_firefox_profiles(roots: &[PathBuf], display_name: &str, is_default_browser: bool) -> Vec<BrowserProfile> {
     let mut entries: Vec<(String, PathBuf, bool)> = Vec::new();
-    let mut any_root = false;
 
-    for root in &roots {
+    for root in roots {
         if !root.is_dir() {
             continue;
         }
-        any_root = true;
         if let Ok(ini) = std::fs::read_to_string(root.join("profiles.ini")) {
             for (name, rel_path, is_relative, is_default) in parse_firefox_profiles_ini(&ini) {
                 let full = if is_relative {
@@ -221,20 +454,14 @@ fn detect_firefox_profiles(home: &Path, config_home: &Path, is_default_browser: 
         }
     }
 
-    if !any_root {
+    if entries.is_empty() {
         return Vec::new();
     }
-    if entries.is_empty() {
-        return vec![BrowserProfile {
-            spec: "firefox".into(),
-            label: "Firefox".into(),
-            default: is_default_browser,
-        }];
-    }
     if entries.len() == 1 {
+        let (_, path, _) = &entries[0];
         return vec![BrowserProfile {
-            spec: "firefox".into(),
-            label: "Firefox".into(),
+            spec: format!("firefox:{}", path.display()),
+            label: display_name.to_string(),
             default: is_default_browser,
         }];
     }
@@ -244,7 +471,7 @@ fn detect_firefox_profiles(home: &Path, config_home: &Path, is_default_browser: 
         .enumerate()
         .map(|(i, (name, path, is_def))| BrowserProfile {
             spec: format!("firefox:{}", path.display()),
-            label: format!("Firefox — {name}"),
+            label: format!("{display_name} — {name}"),
             default: is_default_browser && (is_def || i == 0),
         })
         .collect()
@@ -341,16 +568,13 @@ fn detect_chromium_profiles(
     }
 
     if entries.is_empty() {
-        return vec![BrowserProfile {
-            spec: id.to_string(),
-            label: display_name.to_string(),
-            default: is_default_browser,
-        }];
+        return Vec::new();
     }
     if entries.len() == 1 {
         let (dir_name, _, _) = &entries[0];
+        let full = browser_dir.join(dir_name);
         return vec![BrowserProfile {
-            spec: format!("{id}:{dir_name}"),
+            spec: format!("{id}:{}", full.display()),
             label: display_name.to_string(),
             default: is_default_browser,
         }];
@@ -359,10 +583,13 @@ fn detect_chromium_profiles(
     entries
         .into_iter()
         .enumerate()
-        .map(|(i, (dir_name, profile_name, is_last_used))| BrowserProfile {
-            spec: format!("{id}:{dir_name}"),
-            label: format!("{display_name} — {profile_name}"),
-            default: is_default_browser && (is_last_used || i == 0),
+        .map(|(i, (dir_name, profile_name, is_last_used))| {
+            let full = browser_dir.join(&dir_name);
+            BrowserProfile {
+                spec: format!("{id}:{}", full.display()),
+                label: format!("{display_name} — {profile_name}"),
+                default: is_default_browser && (is_last_used || i == 0),
+            }
         })
         .collect()
 }
@@ -443,18 +670,44 @@ fn parse_default_browser_mimeapps(text: &str) -> Option<&'static str> {
 
 fn desktop_to_browser_id(desktop: &str) -> Option<&'static str> {
     let lower = desktop.to_ascii_lowercase();
-    if lower.contains("firefox") {
+    if lower.contains("zen") {
+        Some("zen")
+    } else if lower.contains("librewolf") {
+        Some("librewolf")
+    } else if lower.contains("floorp") {
+        Some("floorp")
+    } else if lower.contains("waterfox") {
+        Some("waterfox")
+    } else if lower.contains("firefox") {
         Some("firefox")
+    } else if lower.contains("brave-origin") || lower.contains("com.brave.origin") {
+        Some("brave-origin")
+    } else if lower.contains("brave-browser-beta") {
+        Some("brave-beta")
+    } else if lower.contains("brave-browser-nightly") {
+        Some("brave-nightly")
     } else if lower.contains("brave") {
         Some("brave")
+    } else if lower.contains("vivaldi-snapshot") {
+        Some("vivaldi-snapshot")
     } else if lower.contains("vivaldi") {
         Some("vivaldi")
     } else if lower.contains("opera") {
         Some("opera")
+    } else if lower.contains("edge-beta") {
+        Some("edge-beta")
     } else if lower.contains("edge") {
         Some("edge")
+    } else if lower.contains("thorium") {
+        Some("thorium")
+    } else if lower.contains("ungoogled") {
+        Some("ungoogled-chromium")
     } else if lower.contains("chromium") {
         Some("chromium")
+    } else if lower.contains("chrome-beta") {
+        Some("chrome-beta")
+    } else if lower.contains("chrome-unstable") {
+        Some("chrome-unstable")
     } else if lower.contains("chrome") {
         Some("chrome")
     } else {
@@ -528,11 +781,34 @@ pub async fn extract_from_browser(spec: &str) -> Result<String, ExtractError> {
             "yt-dlp is not installed, so pova can't read browser cookies automatically.".into(),
         ));
     }
+
+    match extract_once(&spec).await {
+        Ok(cookie) => Ok(cookie),
+        Err(ExtractError::NotSignedIn { .. }) => {
+            // Some Chromium forks (e.g. Brave Origin or custom builds) store their
+            // encryption key under "Chromium Safe Storage" instead of their parent
+            // brand name; retry with `chromium:<path>` if a full profile path was given.
+            if let Some((head, path)) = spec.split_once(':')
+                && path.starts_with('/')
+                && matches!(head.split('+').next(), Some("brave" | "chrome" | "vivaldi" | "edge"))
+            {
+                let alt = format!("chromium:{path}");
+                if let Ok(cookie) = extract_once(&alt).await {
+                    return Ok(cookie);
+                }
+            }
+            Err(ExtractError::NotSignedIn { spec })
+        }
+        Err(e) => Err(e),
+    }
+}
+
+async fn extract_once(spec: &str) -> Result<String, ExtractError> {
     let tmp = TempJar::new().map_err(|e| ExtractError::Other(e.to_string()))?;
 
     // Fast path: current yt-dlp opens YoutubeDL and saves the extracted cookie
     // jar on exit without making any network request or solving JS challenges.
-    let stderr = run_ytdlp_export(&spec, &tmp.jar, false)
+    let stderr = run_ytdlp_export(spec, &tmp.jar, false)
         .await
         .map_err(|e| ExtractError::Other(e.to_string()))?;
     let jar_ready = std::fs::metadata(&tmp.jar).is_ok_and(|m| m.len() > 0);
@@ -540,7 +816,7 @@ pub async fn extract_from_browser(spec: &str) -> Result<String, ExtractError> {
     // Compatibility fallback for older yt-dlp builds that check URL arguments
     // before constructing YoutubeDL.
     let stderr = if !jar_ready && stderr.contains("You must provide at least one URL") && !stderr.contains("ERROR:") {
-        run_ytdlp_export(&spec, &tmp.jar, true)
+        run_ytdlp_export(spec, &tmp.jar, true)
             .await
             .map_err(|e| ExtractError::Other(e.to_string()))?
     } else {
@@ -549,9 +825,9 @@ pub async fn extract_from_browser(spec: &str) -> Result<String, ExtractError> {
 
     let jar_text = match std::fs::read_to_string(&tmp.jar) {
         Ok(s) if !s.trim().is_empty() => s,
-        _ => return Err(ExtractError::Other(explain_extract_error(&spec, &stderr))),
+        _ => return Err(ExtractError::Other(explain_extract_error(spec, &stderr))),
     };
-    parse_netscape_jar(&jar_text, &spec)
+    parse_netscape_jar(&jar_text, spec)
 }
 
 async fn run_ytdlp_export(spec: &str, jar: &Path, with_url: bool) -> anyhow::Result<String> {
@@ -916,6 +1192,10 @@ x-scheme-handler/https=org.mozilla.firefox.desktop;
         assert_eq!(parse_default_browser_mimeapps(text), Some("firefox"));
         let chrome = "[Default Applications]\ntext/html=google-chrome.desktop\n";
         assert_eq!(parse_default_browser_mimeapps(chrome), Some("chrome"));
+        let brave_origin = "[Default Applications]\nx-scheme-handler/https=brave-origin.desktop\n";
+        assert_eq!(parse_default_browser_mimeapps(brave_origin), Some("brave-origin"));
+        let zen = "[Default Applications]\nx-scheme-handler/https=app.zen_browser.zen.desktop\n";
+        assert_eq!(parse_default_browser_mimeapps(zen), Some("zen"));
     }
 
     #[test]
