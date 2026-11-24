@@ -1,15 +1,16 @@
 //! YouTube Music actor (ytmapi-rs). Every request runs as its own task and
 //! reports back through [`YtmEvent`]s.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 
 use futures::StreamExt;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use ytmapi_rs::YtMusic;
-use ytmapi_rs::auth::BrowserToken;
 use ytmapi_rs::auth::noauth::NoAuthToken;
+use ytmapi_rs::auth::{AuthToken, BrowserToken, LoggedIn, RawResult};
 use ytmapi_rs::common::{AlbumID, ArtistChannelID, LikeStatus, PlaylistID, Thumbnail, VideoID, YoutubeID};
-use ytmapi_rs::parse::{HistoryItem, PlaylistItem, SearchResultPlaylist, SearchResultVideo};
+use ytmapi_rs::parse::{HistoryItem, PlaylistItem, ProcessedResult, SearchResultPlaylist, SearchResultVideo};
 use ytmapi_rs::query::GetPlaylistTracksQuery;
 
 use crate::model::{AlbumRef, ArtistRef, Item, PlaylistRef, Track, parse_duration};
@@ -184,10 +185,43 @@ pub enum YtmEvent {
     },
 }
 
+/// Browser cookie auth extended with optional `X-Goog-AuthUser` and
+/// `X-Goog-PageId` headers so YouTube Brand Accounts and multi-account browser
+/// sessions load the right library instead of an empty default account.
+#[derive(Clone)]
+struct AccountToken {
+    inner: BrowserToken,
+    auth_user: Option<String>,
+    page_id: Option<String>,
+}
+
+impl AuthToken for AccountToken {
+    fn headers(&self) -> ytmapi_rs::Result<impl IntoIterator<Item = (&str, Cow<'_, str>)>> {
+        let mut headers: Vec<(&str, Cow<'_, str>)> = self.inner.headers()?.into_iter().collect();
+        if let Some(u) = &self.auth_user {
+            headers.push(("X-Goog-AuthUser", Cow::Borrowed(u.as_str())));
+        }
+        if let Some(p) = &self.page_id {
+            headers.push(("X-Goog-PageId", Cow::Borrowed(p.as_str())));
+        }
+        Ok(headers)
+    }
+
+    fn client_version(&self) -> Cow<'_, str> {
+        self.inner.client_version()
+    }
+
+    fn deserialize_response<Q>(raw: RawResult<Q, Self>) -> ytmapi_rs::Result<ProcessedResult<Q>> {
+        ProcessedResult::try_from(raw)
+    }
+}
+
+impl LoggedIn for AccountToken {}
+
 #[derive(Clone)]
 enum Client {
     Anon(YtMusic<NoAuthToken>),
-    Auth(YtMusic<BrowserToken>),
+    Auth(YtMusic<AccountToken>),
 }
 
 /// Run `$body` with `$yt` bound to whichever client variant we have.
@@ -208,10 +242,225 @@ pub const SIGNED_OUT: &str = "YouTube Music signed you out: the saved login cook
 Open the Library tab (b) to sign in again, or run `pova login`.";
 
 enum AuthOutcome {
-    SignedIn { client: YtMusic<BrowserToken> },
+    SignedIn { client: YtMusic<AccountToken> },
     NeedsBrowser { spec: String, label: String, browser_opened: bool },
     PollPending,
     Error { message: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AccountCandidate {
+    auth_user: Option<String>,
+    page_id: Option<String>,
+    selected: bool,
+}
+
+/// Build an authenticated client from `cookie`, automatically targeting the
+/// right YouTube Brand Account (`X-Goog-PageId`) or Google account slot
+/// (`X-Goog-AuthUser`) when the browser session has multiple accounts/channels.
+async fn build_auth_client(cookie: &str) -> ytmapi_rs::Result<YtMusic<AccountToken>> {
+    let http = ytmapi_rs::client::Client::new().expect("ytmapi-rs http client");
+    let inner = BrowserToken::from_str(cookie, &http).await?;
+    let default_yt = YtMusic::from_auth_token(AccountToken {
+        inner: inner.clone(),
+        auth_user: Some("0".into()),
+        page_id: None,
+    });
+
+    // Fast path: check default account 0 first. If it's signed out, return it
+    // so the caller reports logged_in=0; if it already has playlists or liked
+    // songs, use it directly without extra requests.
+    let (logged_in, has_playlists) = inspect_library(&default_yt).await;
+    if logged_in == Some(false) || has_playlists {
+        return Ok(default_yt);
+    }
+    if logged_in == Some(true) && has_liked_songs(&default_yt).await {
+        return Ok(default_yt);
+    }
+
+    // Default account 0 is signed in (or unclear) with an empty library.
+    // Query YouTube's `account/accounts_list` to discover Brand Accounts and
+    // secondary Google accounts in the same browser session.
+    let mut candidates = discover_accounts(&inner).await;
+    for slot in ["1", "2"] {
+        if !candidates
+            .iter()
+            .any(|c| c.auth_user.as_deref() == Some(slot) && c.page_id.is_none())
+        {
+            candidates.push(AccountCandidate {
+                auth_user: Some(slot.into()),
+                page_id: None,
+                selected: false,
+            });
+        }
+    }
+    // Check selected accounts/channels first, cap total probes so startup stays fast.
+    candidates.sort_by_key(|c| !c.selected);
+    let mut selected_fallback: Option<YtMusic<AccountToken>> = None;
+    for cand in candidates.into_iter().take(6) {
+        if cand.auth_user.as_deref().unwrap_or("0") == "0" && cand.page_id.is_none() {
+            continue;
+        }
+        let yt = YtMusic::from_auth_token(AccountToken {
+            inner: inner.clone(),
+            auth_user: cand.auth_user.clone(),
+            page_id: cand.page_id.clone(),
+        });
+        let (state, playlists) = inspect_library(&yt).await;
+        if state == Some(false) {
+            continue;
+        }
+        if playlists || has_liked_songs(&yt).await {
+            tracing::info!(
+                "using YouTube account auth_user={:?}, brand_account={}",
+                cand.auth_user,
+                cand.page_id.is_some()
+            );
+            return Ok(yt);
+        }
+        if cand.selected && selected_fallback.is_none() {
+            selected_fallback = Some(yt);
+        }
+    }
+
+    Ok(selected_fallback.unwrap_or(default_yt))
+}
+
+async fn inspect_library(yt: &YtMusic<AccountToken>) -> (Option<bool>, bool) {
+    use ytmapi_rs::query::GetLibraryPlaylistsQuery;
+    match yt.raw_json_query(GetLibraryPlaylistsQuery).await {
+        Ok(raw) => {
+            let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                return (None, false);
+            };
+            let state = find_logged_in(&json);
+            let has_playlists = !parse_library_playlists_json(&json).is_empty();
+            (state, has_playlists)
+        }
+        Err(e) => {
+            let (_, rejected) = explain(&e.to_string());
+            (if rejected { Some(false) } else { None }, false)
+        }
+    }
+}
+
+async fn has_liked_songs(yt: &YtMusic<AccountToken>) -> bool {
+    let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw("VLLM".to_string()));
+    matches!(
+        yt.stream(&query).take(1).collect::<Vec<_>>().await.into_iter().next(),
+        Some(Ok(page)) if !page.is_empty()
+    )
+}
+
+async fn discover_accounts(inner: &BrowserToken) -> Vec<AccountCandidate> {
+    let Ok(token_headers) = inner.headers() else {
+        return Vec::new();
+    };
+    let Ok(http) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+    else {
+        return Vec::new();
+    };
+    let mut req = http
+        .post("https://music.youtube.com/youtubei/v1/account/accounts_list?alt=json")
+        .header("X-Goog-AuthUser", "0")
+        .json(&serde_json::json!({
+            "context": {
+                "client": {
+                    "clientName": "WEB_REMIX",
+                    "clientVersion": inner.client_version(),
+                }
+            }
+        }));
+    for (k, v) in token_headers {
+        req = req.header(k, v.as_ref());
+    }
+    let Ok(resp) = req.send().await else {
+        return Vec::new();
+    };
+    let Ok(json) = resp.json::<serde_json::Value>().await else {
+        return Vec::new();
+    };
+    let found = parse_accounts_list(&json);
+    tracing::info!("discovered {} YouTube account/channel candidates", found.len());
+    found
+}
+
+/// Extract `(auth_user, page_id, is_selected)` candidates from Innertube's
+/// `account/accounts_list` response.
+fn parse_accounts_list(v: &serde_json::Value) -> Vec<AccountCandidate> {
+    let mut out = Vec::new();
+    collect_accounts(v, &mut out);
+    out
+}
+
+fn collect_accounts(v: &serde_json::Value, out: &mut Vec<AccountCandidate>) {
+    match v {
+        serde_json::Value::Object(map) => {
+            if let Some(item) = map.get("accountItemRenderer") {
+                if let Some(cand) = parse_account_item(item)
+                    && !out
+                        .iter()
+                        .any(|e| e.auth_user == cand.auth_user && e.page_id == cand.page_id)
+                {
+                    out.push(cand);
+                }
+                return;
+            }
+            for child in map.values() {
+                collect_accounts(child, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                collect_accounts(child, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_account_item(item: &serde_json::Value) -> Option<AccountCandidate> {
+    let selected = item.get("isSelected").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let tokens = item
+        .pointer("/serviceEndpoint/selectActiveIdentityEndpoint/supportedTokens")
+        .and_then(serde_json::Value::as_array)?;
+    let mut page_id: Option<String> = None;
+    let mut auth_user: Option<String> = None;
+    for tok in tokens {
+        if let Some(pid) = tok
+            .pointer("/pageIdToken/pageId")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
+            page_id = Some(pid.to_string());
+        }
+        if let Some(url) = tok
+            .pointer("/accountSigninToken/signinUrl")
+            .and_then(serde_json::Value::as_str)
+            && let Some(u) = extract_authuser_param(url)
+        {
+            auth_user = Some(u);
+        }
+    }
+    if page_id.is_none() && auth_user.is_none() {
+        return None;
+    }
+    Some(AccountCandidate {
+        auth_user: auth_user.or_else(|| Some("0".into())),
+        page_id,
+        selected,
+    })
+}
+
+fn extract_authuser_param(url: &str) -> Option<String> {
+    let decoded = url.replace("%3D", "=").replace("%3d", "=").replace("%26", "&").replace("%3F", "?");
+    decoded
+        .split(['?', '&'])
+        .find_map(|kv| kv.strip_prefix("authuser="))
+        .map(|v| v.chars().take_while(char::is_ascii_digit).collect::<String>())
+        .filter(|v| !v.is_empty())
 }
 
 /// Extract cookies from a specific browser/profile, verify with YouTube Music
@@ -235,7 +484,7 @@ async fn verify_browser_login(spec: String, label: String, cookie_file: PathBuf,
         Err(ExtractError::Other(message)) => return AuthOutcome::Error { message },
     };
 
-    match YtMusic::from_cookie(&cookie).await {
+    match build_auth_client(&cookie).await {
         Ok(yt) if login_state(&yt).await == Some(false) => {
             if is_poll {
                 AuthOutcome::PollPending
@@ -307,7 +556,7 @@ pub async fn run(cookie_file: PathBuf, mut reqs: UnboundedReceiver<YtmReq>, even
                         tokio::spawn(async move {
                             let outcome = match crate::auth::normalize_pasted_cookie(&raw) {
                                 Err(e) => AuthOutcome::Error { message: e.to_string() },
-                                Ok(cookie) => match YtMusic::from_cookie(&cookie).await {
+                                Ok(cookie) => match build_auth_client(&cookie).await {
                                     Ok(yt) if login_state(&yt).await == Some(false) => AuthOutcome::Error {
                                         message: "That cookie isn't signed in to YouTube Music (or has expired). \
                                                   Sign in at music.youtube.com and copy a fresh Cookie header."
@@ -461,18 +710,18 @@ fn offline_event(req: YtmReq) -> YtmEvent {
 
 /// Whether YouTube treats this client as signed in, from the `logged_in`
 /// flag it puts in every response. None if the check itself failed.
-async fn login_state(yt: &YtMusic<BrowserToken>) -> Option<bool> {
+async fn login_state(yt: &YtMusic<AccountToken>) -> Option<bool> {
     use ytmapi_rs::query::GetLibraryPlaylistsQuery;
     let raw = yt.raw_json_query(GetLibraryPlaylistsQuery).await;
     match raw {
         Ok(raw) => {
             let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
             let state = find_logged_in(&json);
-            tracing::debug!("login check: logged_in = {state:?}");
+            tracing::info!("login check: logged_in = {state:?}");
             state
         }
         Err(e) => {
-            tracing::debug!("login check failed: {e}");
+            tracing::warn!("login check failed: {e}");
             let (_, rejected) = explain(&e.to_string());
             if rejected { Some(false) } else { None }
         }
@@ -504,7 +753,15 @@ fn file_stamp(path: &std::path::Path) -> Option<std::time::SystemTime> {
 async fn connect(cookie_file: &PathBuf, events: &UnboundedSender<YtmEvent>, source: Option<&str>) -> Option<Client> {
     let mut auth_sent = false;
     if cookie_file.exists() {
-        match YtMusic::from_cookie_file(cookie_file).await {
+        let cookie_res = tokio::fs::read_to_string(cookie_file)
+            .await
+            .map(|c| c.trim().to_string())
+            .map_err(|e| e.to_string());
+        let auth_res = match cookie_res {
+            Ok(cookie) => build_auth_client(&cookie).await.map_err(|e| e.to_string()),
+            Err(e) => Err(e),
+        };
+        match auth_res {
             // An expired cookie often isn't refused outright: YouTube just
             // answers as if signed out. Check before claiming "signed in".
             Ok(yt) if login_state(&yt).await == Some(false) => {
@@ -869,7 +1126,7 @@ fn bare_playlist_id(id: &str) -> String {
 /// Removing needs the song's per-playlist "setVideoId", which ytmapi-rs
 /// doesn't parse, so read it from the raw playlist page. Ok(false) when the
 /// song isn't on the first page.
-async fn remove_from_playlist(yt: &YtMusic<BrowserToken>, playlist_id: &str, video_id: &str) -> anyhow::Result<bool> {
+async fn remove_from_playlist(yt: &YtMusic<AccountToken>, playlist_id: &str, video_id: &str) -> anyhow::Result<bool> {
     use ytmapi_rs::common::SetVideoID;
     let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw(format!("VL{}", bare_playlist_id(playlist_id))));
     let raw = yt.raw_json_query(query).await?;
@@ -902,7 +1159,7 @@ fn find_set_video_id(v: &serde_json::Value, video_id: &str) -> Option<String> {
     }
 }
 
-fn need_auth(client: &Client) -> anyhow::Result<&YtMusic<BrowserToken>> {
+fn need_auth(client: &Client) -> anyhow::Result<&YtMusic<AccountToken>> {
     match client {
         Client::Auth(yt) => Ok(yt),
         Client::Anon(_) => anyhow::bail!(
@@ -991,21 +1248,14 @@ async fn load(client: &Client, view: &View) -> anyhow::Result<(String, Vec<Item>
         }
         View::LikedSongs => {
             need_auth(client)?;
-            ("Liked songs".into(), playlist_tracks(client, "LM").await?)
+            let tracks = playlist_tracks(client, "LM").await?;
+            tracing::info!("loaded {} liked songs", tracks.len());
+            ("Liked songs".into(), tracks)
         }
         View::LibraryPlaylists => {
             let yt = need_auth(client)?;
-            let lists = yt.get_library_playlists().await?;
-            let items = lists
-                .into_iter()
-                .map(|p| {
-                    Item::Playlist(PlaylistRef {
-                        id: p.playlist_id.get_raw().to_string(),
-                        title: p.title,
-                        subtitle: format!("{} · {}", p.author, p.tracks),
-                    })
-                })
-                .collect();
+            let items = load_library_playlists(yt).await?;
+            tracing::info!("loaded {} library playlists", items.len());
             ("Your playlists".into(), items)
         }
         View::History => {
@@ -1040,8 +1290,101 @@ async fn load(client: &Client, view: &View) -> anyhow::Result<(String, Vec<Item>
                     }
                 }
             }
+            tracing::info!("loaded {} history items", items.len());
             ("History".into(), items)
         }
+    })
+}
+
+/// Load the user's library playlists.
+///
+/// Parses `GetLibraryPlaylistsQuery`'s raw JSON directly because `ytmapi-rs`'s
+/// parser blindly `.skip(1)`s the first playlist after filtering out "Liked
+/// Music" (dropping a user's only playlist) and misses grids nested inside
+/// `itemSectionRenderer`.
+async fn load_library_playlists(yt: &YtMusic<AccountToken>) -> anyhow::Result<Vec<Item>> {
+    use ytmapi_rs::query::GetLibraryPlaylistsQuery;
+    let raw = yt.raw_json_query(GetLibraryPlaylistsQuery).await?;
+    let json: serde_json::Value = serde_json::from_str(&raw)?;
+    let parsed = parse_library_playlists_json(&json);
+    if !parsed.is_empty() {
+        return Ok(parsed.into_iter().map(Item::Playlist).collect());
+    }
+    // Fall back to ytmapi-rs in case YouTube uses an alternate layout.
+    let lists = yt.get_library_playlists().await?;
+    Ok(lists
+        .into_iter()
+        .map(|p| {
+            Item::Playlist(PlaylistRef {
+                id: p.playlist_id.get_raw().to_string(),
+                title: p.title,
+                subtitle: format!("{} · {}", p.author, p.tracks),
+            })
+        })
+        .collect())
+}
+
+fn parse_library_playlists_json(v: &serde_json::Value) -> Vec<PlaylistRef> {
+    let mut out = Vec::new();
+    collect_library_playlists(v, &mut out);
+    out
+}
+
+fn collect_library_playlists(v: &serde_json::Value, out: &mut Vec<PlaylistRef>) {
+    match v {
+        serde_json::Value::Object(map) => {
+            if let Some(mtrir) = map.get("musicTwoRowItemRenderer") {
+                if let Some(p) = parse_mtrir_playlist(mtrir)
+                    && !out.iter().any(|existing| existing.id == p.id)
+                {
+                    out.push(p);
+                }
+                return;
+            }
+            for child in map.values() {
+                collect_library_playlists(child, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                collect_library_playlists(child, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_mtrir_playlist(mtrir: &serde_json::Value) -> Option<PlaylistRef> {
+    let browse_id = mtrir
+        .pointer("/navigationEndpoint/browseEndpoint/browseId")
+        .or_else(|| mtrir.pointer("/title/runs/0/navigationEndpoint/browseEndpoint/browseId"))
+        .and_then(serde_json::Value::as_str)?;
+    // Real playlists use VL-prefixed browse ids; skip special system lists.
+    let bare = browse_id.strip_prefix("VL")?;
+    if matches!(bare, "LM" | "SE" | "SS" | "RDPN") {
+        return None;
+    }
+    let title = mtrir
+        .pointer("/title/runs/0/text")
+        .and_then(serde_json::Value::as_str)?
+        .trim()
+        .to_string();
+    if title.is_empty() {
+        return None;
+    }
+    let subtitle = mtrir
+        .pointer("/subtitle/runs")
+        .and_then(serde_json::Value::as_array)
+        .map(|runs| {
+            runs.iter()
+                .filter_map(|r| r.get("text").and_then(serde_json::Value::as_str))
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+    Some(PlaylistRef {
+        id: browse_id.to_string(),
+        title,
+        subtitle,
     })
 }
 
@@ -1343,6 +1686,124 @@ mod correction_tests {
         assert_eq!(find_set_video_id(&json, "zzz"), None);
         assert_eq!(bare_playlist_id("VLPL123"), "PL123");
         assert_eq!(bare_playlist_id("PL123"), "PL123");
+    }
+
+    #[test]
+    fn parses_accounts_list_for_brand_accounts_and_authuser() {
+        use super::{AccountCandidate, parse_accounts_list};
+        let json = serde_json::json!({
+            "actions": [{
+                "getMultiPageMenuAction": {
+                    "menu": {
+                        "multiPageMenuRenderer": {
+                            "sections": [{
+                                "accountSectionListRenderer": {
+                                    "contents": [{
+                                        "accountItemSectionRenderer": {
+                                            "contents": [
+                                                {
+                                                    "accountItemRenderer": {
+                                                        "isSelected": false,
+                                                        "serviceEndpoint": {
+                                                            "selectActiveIdentityEndpoint": {
+                                                                "supportedTokens": [
+                                                                    {"accountSigninToken": {"signinUrl": "/signin?authuser=0&pageid=none"}}
+                                                                ]
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                {
+                                                    "accountItemRenderer": {
+                                                        "isSelected": true,
+                                                        "serviceEndpoint": {
+                                                            "selectActiveIdentityEndpoint": {
+                                                                "supportedTokens": [
+                                                                    {"accountSigninToken": {"signinUrl": "/signin?authuser=1"}},
+                                                                    {"pageIdToken": {"pageId": "101234567890123456789"}}
+                                                                ]
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            ]
+                                        }
+                                    }]
+                                }
+                            }]
+                        }
+                    }
+                }
+            }]
+        });
+        assert_eq!(
+            parse_accounts_list(&json),
+            vec![
+                AccountCandidate {
+                    auth_user: Some("0".into()),
+                    page_id: None,
+                    selected: false,
+                },
+                AccountCandidate {
+                    auth_user: Some("1".into()),
+                    page_id: Some("101234567890123456789".into()),
+                    selected: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_library_playlists_without_dropping_first_real_playlist() {
+        use super::parse_library_playlists_json;
+        let json = serde_json::json!({
+            "contents": {
+                "singleColumnBrowseResultsRenderer": {
+                    "tabs": [{
+                        "tabRenderer": {
+                            "content": {
+                                "sectionListRenderer": {
+                                    "contents": [{
+                                        "itemSectionRenderer": {
+                                            "contents": [{
+                                                "gridRenderer": {
+                                                    "items": [
+                                                        {
+                                                            "musicTwoRowItemRenderer": {
+                                                                "title": {"runs": [{"text": "New playlist"}]},
+                                                                "navigationEndpoint": {"browseEndpoint": {"browseId": "FEmusic_new_playlist"}}
+                                                            }
+                                                        },
+                                                        {
+                                                            "musicTwoRowItemRenderer": {
+                                                                "title": {"runs": [{"text": "Liked Music"}]},
+                                                                "navigationEndpoint": {"browseEndpoint": {"browseId": "VLLM"}}
+                                                            }
+                                                        },
+                                                        {
+                                                            "musicTwoRowItemRenderer": {
+                                                                "title": {"runs": [{"text": "Ruski"}]},
+                                                                "subtitle": {"runs": [{"text": "Chr0llo"}, {"text": " • "}, {"text": "2 tracks"}]},
+                                                                "navigationEndpoint": {"browseEndpoint": {"browseId": "VLPL123"}}
+                                                            }
+                                                        }
+                                                    ]
+                                                }
+                                            }]
+                                        }
+                                    }]
+                                }
+                            }
+                        }
+                    }]
+                }
+            }
+        });
+        let lists = parse_library_playlists_json(&json);
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0].id, "VLPL123");
+        assert_eq!(lists[0].title, "Ruski");
+        assert_eq!(lists[0].subtitle, "Chr0llo • 2 tracks");
     }
 
     #[test]
