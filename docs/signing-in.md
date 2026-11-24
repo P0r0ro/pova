@@ -10,18 +10,18 @@ the login your browser already has.
 ### Inside pova (easiest)
 
 1. Open the **Library** tab (`b`), or click **○ signed out** in the player border.
-2. Pick your browser (e.g. **Sign in with Firefox**) and press **Enter** (or click it).
+2. Press **Enter** (or click **Sign in**).
 
-If you're already signed in to <https://music.youtube.com> in that browser,
-pova signs in right away in a couple of seconds. If not, pova opens
-<https://music.youtube.com> in your browser so you can sign in with your Google
-account normally, and finishes signing in automatically once you're done.
+If you're already signed in to <https://music.youtube.com> in any browser on
+your machine, pova signs in right away. If not, pova displays and opens the
+<https://music.youtube.com> link so you can sign in with your Google account in
+any browser, and picks it up automatically once you're done.
 
 Under the hood, pova reads only the `youtube.com` cookies through `yt-dlp` and
 saves them to `~/.config/pova/cookie.txt` (mode `600`). On KDE/GNOME, your
 desktop keyring may ask to unlock Chromium/Chrome cookies.
 
-Need a specific browser profile? Pick **Other browser / profile…** and enter
+Need a specific browser profile? Press `p` (or click **profile (p)**) and enter
 something like `chrome:Profile 2` or `firefox:work`.
 
 To sign out again, open the Esc menu and choose **Sign out** (or click

@@ -3,13 +3,14 @@
 ## Unreleased
 
 - **One-click browser sign-in and `pova login` / `pova logout`.** The Library
-  tab now detects your installed browsers so you can sign in directly inside
-  pova (with Enter or a click). If you aren't signed in to `music.youtube.com`
-  in that browser yet, pova opens it for you and signs in automatically once
-  you finish signing in with Google. Also adds custom browser profiles, a
-  masked manual-paste fallback, `Sign in` / `Sign out` in the Esc menu,
-  clickable login status in the player border, and `pova login` / `pova logout`
-  CLI commands without needing `python3`.
+  tab now shows a single **Sign in** button instead of manual DevTools
+  instructions. pova checks your installed browsers automatically; if you
+  aren't signed in to `music.youtube.com` yet, it opens and displays the
+  `https://music.youtube.com` link and finishes signing in automatically once
+  you sign in with Google in any browser. Also adds custom browser profile
+  input (`p`), a masked manual-paste fallback (`c`), `Sign in` / `Sign out` in
+  the Esc menu, clickable login status in the player border, and `pova login` /
+  `pova logout` CLI commands without needing `python3`.
 
 ## 1.2.0 — even loudness, dislike, notifications
 

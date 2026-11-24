@@ -166,13 +166,6 @@ impl SearchState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum AuthOption {
-    Browser { id: String, label: String, default: bool },
-    CustomBrowser,
-    PasteCookie,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuthInput {
     /// Custom `yt-dlp --cookies-from-browser` spec, e.g. `chrome:Profile 2`.
     CustomBrowser(String),
@@ -182,44 +175,20 @@ pub enum AuthInput {
 
 #[derive(Clone)]
 pub struct AuthWaiting {
-    pub spec: String,
-    pub label: String,
+    pub specs: Vec<String>,
     pub browser_opened: bool,
     pub started: Instant,
     pub next_poll: Instant,
     pub checking: bool,
 }
 
+#[derive(Default)]
 pub struct AuthUi {
-    pub options: Vec<AuthOption>,
-    pub selected: usize,
     pub input: Option<AuthInput>,
-    /// Label of the active initial sign-in check (drives the spinner).
+    /// Status text shown alongside the spinner while checking browsers or saving a cookie.
     pub busy: Option<String>,
-    /// Waiting for the user to finish signing in on `music.youtube.com` in their browser.
+    /// Waiting for the user to finish signing in at `https://music.youtube.com`.
     pub waiting: Option<AuthWaiting>,
-}
-
-impl AuthUi {
-    pub fn new() -> Self {
-        let mut options: Vec<AuthOption> = crate::auth::detect_browsers()
-            .into_iter()
-            .map(|b| AuthOption::Browser {
-                id: b.id.to_string(),
-                label: b.label.to_string(),
-                default: b.default,
-            })
-            .collect();
-        options.push(AuthOption::CustomBrowser);
-        options.push(AuthOption::PasteCookie);
-        Self {
-            options,
-            selected: 0,
-            input: None,
-            busy: None,
-            waiting: None,
-        }
-    }
 }
 
 pub struct LibraryState {
@@ -343,7 +312,9 @@ pub enum Hit {
     LibSection(LibSection),
     Suggestion(usize),
     Auth,
-    AuthOption(usize),
+    AuthStart,
+    AuthCustomBrowser,
+    AuthPasteCookie,
     AuthCheckNow,
     AuthOpenBrowser,
     AuthCancel,
@@ -557,7 +528,7 @@ impl App {
             library: LibraryState {
                 section: LibSection::Playlists,
                 stack: Vec::new(),
-                auth: AuthUi::new(),
+                auth: AuthUi::default(),
             },
             lyrics: LyricsState::None,
             lyrics_scroll: None,
@@ -781,10 +752,7 @@ impl App {
             && Instant::now() >= w.next_poll
         {
             w.checking = true;
-            let _ = self.tx.ytm.send(YtmReq::PollBrowser {
-                spec: w.spec.clone(),
-                label: w.label.clone(),
-            });
+            let _ = self.tx.ytm.send(YtmReq::PollSignIn { specs: w.specs.clone() });
         }
         if let Some(due) = self.search.suggest_due
             && Instant::now() >= due
@@ -1329,15 +1297,10 @@ impl App {
                     self.flash(m, true);
                 }
             }
-            YtmEvent::AuthNeedsBrowser {
-                spec,
-                label,
-                browser_opened,
-            } => {
+            YtmEvent::AuthNeedsBrowser { specs, browser_opened } => {
                 self.library.auth.busy = None;
                 self.library.auth.waiting = Some(AuthWaiting {
-                    spec,
-                    label,
+                    specs,
                     browser_opened,
                     started: Instant::now(),
                     next_poll: Instant::now() + Duration::from_secs(4),
@@ -1883,6 +1846,24 @@ impl App {
             self.on_auth_input_key(k);
             return;
         }
+        if self.tab == Tab::Library
+            && !self.logged_in
+            && self.library.auth.busy.is_none()
+            && self.library.auth.waiting.is_none()
+            && !k.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            match k.code {
+                KeyCode::Char('p') => {
+                    self.library.auth.input = Some(AuthInput::CustomBrowser(String::new()));
+                    return;
+                }
+                KeyCode::Char('c') => {
+                    self.library.auth.input = Some(AuthInput::PasteCookie(String::new()));
+                    return;
+                }
+                _ => {}
+            }
+        }
         if self.tab == Tab::Search && self.search.editing && self.on_edit_key(k) {
             return;
         }
@@ -1940,26 +1921,13 @@ impl App {
         }
     }
 
-    fn activate_auth_option(&mut self, idx: usize) {
+    fn start_sign_in(&mut self) {
         if self.logged_in || self.library.auth.busy.is_some() || self.library.auth.waiting.is_some() {
             return;
         }
-        let Some(opt) = self.library.auth.options.get(idx).cloned() else {
-            return;
-        };
-        self.library.auth.selected = idx;
-        match opt {
-            AuthOption::Browser { id, label, .. } => {
-                self.library.auth.busy = Some(label.clone());
-                let _ = self.tx.ytm.send(YtmReq::ImportBrowser { spec: id, label });
-            }
-            AuthOption::CustomBrowser => {
-                self.library.auth.input = Some(AuthInput::CustomBrowser(String::new()));
-            }
-            AuthOption::PasteCookie => {
-                self.library.auth.input = Some(AuthInput::PasteCookie(String::new()));
-            }
-        }
+        self.library.auth.input = None;
+        self.library.auth.busy = Some("checking your browsers".into());
+        let _ = self.tx.ytm.send(YtmReq::StartSignIn);
     }
 
     fn poll_auth_now(&mut self) {
@@ -1968,17 +1936,15 @@ impl App {
         {
             w.checking = true;
             w.started = Instant::now();
-            let _ = self.tx.ytm.send(YtmReq::PollBrowser {
-                spec: w.spec.clone(),
-                label: w.label.clone(),
-            });
+            let _ = self.tx.ytm.send(YtmReq::PollSignIn { specs: w.specs.clone() });
         }
     }
 
     fn reopen_auth_browser(&mut self) {
         if let Some(w) = self.library.auth.waiting.as_ref() {
-            let _ = self.tx.ytm.send(YtmReq::OpenBrowser { spec: w.spec.clone() });
-            self.flash(format!("Opened music.youtube.com in {}", w.label), false);
+            let spec = (w.specs.len() == 1).then(|| w.specs[0].clone());
+            let _ = self.tx.ytm.send(YtmReq::OpenSignInLink { spec });
+            self.flash("Opened https://music.youtube.com", false);
         }
     }
 
@@ -2173,17 +2139,7 @@ impl App {
     }
 
     fn move_selection(&mut self, delta: isize) {
-        if self.tab == Tab::Library
-            && !self.logged_in
-            && self.library.auth.busy.is_none()
-            && self.library.auth.waiting.is_none()
-            && self.library.auth.input.is_none()
-        {
-            let len = self.library.auth.options.len();
-            if len > 0 {
-                let cur = self.library.auth.selected.min(len - 1) as isize;
-                self.library.auth.selected = (cur + delta).clamp(0, len as isize - 1) as usize;
-            }
+        if self.tab == Tab::Library && !self.logged_in {
             return;
         }
         if self.tab == Tab::Lyrics {
@@ -2462,7 +2418,7 @@ impl App {
             Tab::Library => {
                 if !self.logged_in {
                     if mode == EnqueueMode::PlayNow {
-                        self.activate_auth_option(self.library.auth.selected);
+                        self.start_sign_in();
                     }
                 } else {
                     self.select_in_browser(mode);
@@ -3025,7 +2981,17 @@ impl App {
                     }
                 }
                 Hit::Auth => self.open_account_action(),
-                Hit::AuthOption(i) => self.activate_auth_option(i),
+                Hit::AuthStart => self.start_sign_in(),
+                Hit::AuthCustomBrowser => {
+                    if !self.logged_in && self.library.auth.busy.is_none() && self.library.auth.waiting.is_none() {
+                        self.library.auth.input = Some(AuthInput::CustomBrowser(String::new()));
+                    }
+                }
+                Hit::AuthPasteCookie => {
+                    if !self.logged_in && self.library.auth.busy.is_none() && self.library.auth.waiting.is_none() {
+                        self.library.auth.input = Some(AuthInput::PasteCookie(String::new()));
+                    }
+                }
                 Hit::AuthCheckNow => self.poll_auth_now(),
                 Hit::AuthOpenBrowser => self.reopen_auth_browser(),
                 Hit::AuthCancel => self.library.auth.waiting = None,
@@ -4029,40 +3995,24 @@ mod playlist_tests {
     }
 
     #[test]
-    fn library_sign_in_picker_imports_browser_and_loads_on_auth() {
+    fn library_sign_in_button_checks_browsers_and_loads_on_auth() {
         let (mut app, mut rx) = app();
-        app.library.auth.options = vec![
-            AuthOption::Browser {
-                id: "firefox".into(),
-                label: "Firefox".into(),
-                default: true,
-            },
-            AuthOption::CustomBrowser,
-            AuthOption::PasteCookie,
-        ];
-        app.library.auth.selected = 0;
 
-        // Opening Library while signed out shows the picker without firing a failing load.
+        // Opening Library while signed out shows the Sign in button without firing a failing load.
         key(&mut app, KeyCode::Char('b'));
         assert_eq!(app.tab, Tab::Library);
         assert!(reqs(&mut rx).is_empty());
         let shown = screen(&mut app);
         assert!(shown.contains("Sign in to YouTube Music"), "{shown}");
-        assert!(shown.contains("Firefox"), "{shown}");
-        assert!(shown.contains("Other browser / profile"), "{shown}");
-        assert!(shown.contains("Paste cookie manually"), "{shown}");
+        assert!(shown.contains("Sign in"), "{shown}");
 
-        // Pressing Enter imports from the selected browser and shows a spinner.
+        // Pressing Enter starts auto sign-in and shows a spinner.
         key(&mut app, KeyCode::Enter);
-        assert_eq!(app.library.auth.busy.as_deref(), Some("Firefox"));
+        assert!(app.library.auth.busy.is_some());
         assert!(app.animating());
         let sent = reqs(&mut rx);
-        assert!(
-            sent.iter()
-                .any(|r| matches!(r, YtmReq::ImportBrowser { spec, .. } if spec == "firefox")),
-            "{sent:?}"
-        );
-        assert!(screen(&mut app).contains("signing in with Firefox"));
+        assert!(sent.iter().any(|r| matches!(r, YtmReq::StartSignIn)), "{sent:?}");
+        assert!(screen(&mut app).contains("checking your browsers"));
 
         // When auth succeeds, spinner clears and Library loads immediately.
         app.on_ytm(YtmEvent::Auth {
@@ -4073,8 +4023,13 @@ mod playlist_tests {
         assert!(!app.library.stack.is_empty());
         let sent = reqs(&mut rx);
         assert!(
-            sent.iter()
-                .any(|r| matches!(r, YtmReq::Load { view: View::LibraryPlaylists, .. })),
+            sent.iter().any(|r| matches!(
+                r,
+                YtmReq::Load {
+                    view: View::LibraryPlaylists,
+                    ..
+                }
+            )),
             "{sent:?}"
         );
     }
@@ -4082,7 +4037,6 @@ mod playlist_tests {
     #[test]
     fn library_sign_in_paste_cookie_is_masked_and_submits() {
         let (mut app, mut rx) = app();
-        app.library.auth.options = vec![AuthOption::CustomBrowser, AuthOption::PasteCookie];
         app.tab = Tab::Library;
 
         // Direct paste of a Cookie header switches straight to the masked paste box.
@@ -4104,14 +4058,13 @@ mod playlist_tests {
     #[test]
     fn library_sign_in_custom_browser_profile_submits_and_esc_returns() {
         let (mut app, mut rx) = app();
-        app.library.auth.options = vec![AuthOption::CustomBrowser, AuthOption::PasteCookie];
         app.tab = Tab::Library;
-        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('p'));
         assert!(matches!(app.library.auth.input, Some(AuthInput::CustomBrowser(_))));
         key(&mut app, KeyCode::Esc);
         assert!(app.library.auth.input.is_none());
 
-        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('p'));
         app.on_terminal(Event::Paste("chrome:Profile 2".into()));
         key(&mut app, KeyCode::Enter);
         let sent = reqs(&mut rx);
@@ -4123,29 +4076,22 @@ mod playlist_tests {
     }
 
     #[test]
-    fn library_sign_in_waits_for_browser_login_and_polls() {
+    fn library_sign_in_spawns_link_and_polls_across_browsers() {
         let (mut app, mut rx) = app();
-        app.library.auth.options = vec![AuthOption::Browser {
-            id: "firefox".into(),
-            label: "Firefox".into(),
-            default: true,
-        }];
         app.tab = Tab::Library;
 
-        // Initial check finds browser isn't signed in yet -> opens browser & waits.
+        // Initial check finds no active login -> shows link & waits.
         key(&mut app, KeyCode::Enter);
         let _ = reqs(&mut rx);
         app.on_ytm(YtmEvent::AuthNeedsBrowser {
-            spec: "firefox".into(),
-            label: "Firefox".into(),
+            specs: vec!["firefox".into(), "chrome".into()],
             browser_opened: true,
         });
         assert!(app.library.auth.busy.is_none());
         assert!(app.library.auth.waiting.is_some());
         assert!(app.animating());
         let shown = screen(&mut app);
-        assert!(shown.contains("Finish signing in"), "{shown}");
-        assert!(shown.contains("music.youtube.com"), "{shown}");
+        assert!(shown.contains("https://music.youtube.com"), "{shown}");
         assert!(shown.contains("Check now"), "{shown}");
 
         // Pressing Enter checks immediately; pending reply keeps waiting cleanly.
@@ -4153,19 +4099,19 @@ mod playlist_tests {
         let sent = reqs(&mut rx);
         assert!(
             sent.iter()
-                .any(|r| matches!(r, YtmReq::PollBrowser { spec, .. } if spec == "firefox")),
+                .any(|r| matches!(r, YtmReq::PollSignIn { specs } if specs == &["firefox", "chrome"])),
             "{sent:?}"
         );
         app.on_ytm(YtmEvent::AuthPollPending);
         assert!(app.library.auth.waiting.is_some());
         assert!(app.flash.is_none(), "pending poll must not flash an error");
 
-        // Pressing 'o' reopens the browser; Esc cancels waiting cleanly.
+        // Pressing 'o' reopens the link; Esc cancels waiting cleanly.
         key(&mut app, KeyCode::Char('o'));
         assert!(
             reqs(&mut rx)
                 .iter()
-                .any(|r| matches!(r, YtmReq::OpenBrowser { spec } if spec == "firefox"))
+                .any(|r| matches!(r, YtmReq::OpenSignInLink { .. }))
         );
         key(&mut app, KeyCode::Esc);
         assert!(app.library.auth.waiting.is_none());

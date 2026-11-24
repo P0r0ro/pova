@@ -222,10 +222,10 @@ Press `?` in pova for every key, or read [docs/keys.md](docs/keys.md).
 ## Signing in
 
 Search, playback, radio and lyrics work without an account. To like songs and
-see your library, open the **Library** tab (`b`), pick your browser (e.g.
-**Sign in with Firefox**), and press Enter (or click it). If you're already
-signed in to <https://music.youtube.com> there, pova signs in immediately; if
-not, pova opens YouTube Music in your browser so you can sign in with Google
+see your library, open the **Library** tab (`b`) and press Enter (or click
+**Sign in**). If you're already signed in to <https://music.youtube.com> in
+your browser, pova signs in right away; if not, pova gives you the
+`https://music.youtube.com` link (and opens it) so you can sign in with Google
 and picks it up automatically.
 
 Prefer the command line?

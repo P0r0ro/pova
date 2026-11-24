@@ -55,15 +55,11 @@ impl std::fmt::Display for ExtractError {
 
 impl std::error::Error for ExtractError {}
 
-/// Open `https://music.youtube.com` in the browser matching `spec` (falling
-/// back to `xdg-open`), detached with null stdio so the TUI is never disturbed.
+/// Open `https://music.youtube.com` in the browser matching `spec` (or the
+/// system default browser when `spec` is empty), detached with null stdio so
+/// the TUI is never disturbed.
 pub fn open_in_browser(spec: &str) -> bool {
-    let browser_id = spec
-        .trim()
-        .split([':', '+'])
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let browser_id = spec.trim().split([':', '+']).next().unwrap_or("").to_ascii_lowercase();
     let bins: &[&str] = match browser_id.as_str() {
         "firefox" => &["firefox"],
         "chrome" => &["google-chrome-stable", "google-chrome", "chrome"],
@@ -680,7 +676,10 @@ music.youtube.com\tFALSE\t/\tTRUE\t2000000000\tPREF\tmusic_specific
 
     #[test]
     fn validates_browser_spec() {
-        assert_eq!(validate_browser_spec("  chrome:Profile 2 ").unwrap(), "chrome:Profile 2");
+        assert_eq!(
+            validate_browser_spec("  chrome:Profile 2 ").unwrap(),
+            "chrome:Profile 2"
+        );
         assert!(validate_browser_spec("").is_err());
         assert!(validate_browser_spec("--exec=bad").is_err());
         assert!(validate_browser_spec("chrome\nfirefox").is_err());
