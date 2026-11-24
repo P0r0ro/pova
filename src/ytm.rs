@@ -100,6 +100,27 @@ pub enum YtmReq {
         playlist_id: String,
         title: String,
     },
+    /// Import YouTube Music cookies from a browser (`yt-dlp --cookies-from-browser`).
+    /// If the browser isn't signed in yet, opens `music.youtube.com` and asks the UI to wait.
+    ImportBrowser {
+        spec: String,
+        label: String,
+    },
+    /// Quietly check whether the user has finished signing in in `spec`.
+    PollBrowser {
+        spec: String,
+        label: String,
+    },
+    /// Open `music.youtube.com` in `spec` (used by "Open again").
+    OpenBrowser {
+        spec: String,
+    },
+    /// Save a manually pasted Cookie header and sign in.
+    SaveCookie {
+        raw: String,
+    },
+    /// Remove the saved cookie and drop back to signed-out mode.
+    SignOut,
 }
 
 /// One autocomplete entry.
@@ -120,6 +141,15 @@ pub enum YtmEvent {
         logged_in: bool,
         message: Option<String>,
     },
+    /// The browser is readable but not signed in to YouTube Music yet; we opened
+    /// `music.youtube.com` so the user can sign in with Google while pova waits.
+    AuthNeedsBrowser {
+        spec: String,
+        label: String,
+        browser_opened: bool,
+    },
+    /// A background poll while waiting for browser sign-in didn't find a login yet.
+    AuthPollPending,
     Loaded {
         token: u64,
         title: String,
@@ -176,24 +206,172 @@ const MAX_PAGES: usize = 20;
 
 /// Shown when YouTube Music rejects the saved cookie.
 pub const SIGNED_OUT: &str = "YouTube Music signed you out: the saved login cookie has expired. \
-To sign back in, run `pova-import-cookie chrome` (or firefox) in another terminal. \
-pova picks up the new cookie by itself, no restart needed.";
+Open the Library tab (b) to sign in again, or run `pova login`.";
+
+enum AuthOutcome {
+    SignedIn {
+        client: YtMusic<BrowserToken>,
+    },
+    NeedsBrowser {
+        spec: String,
+        label: String,
+        browser_opened: bool,
+    },
+    PollPending,
+    Error {
+        message: String,
+    },
+}
+
+/// Extract cookies from a browser, verify with YouTube Music in memory, and
+/// only write `cookie_file` once YouTube confirms the session is signed in.
+async fn verify_browser_login(
+    spec: String,
+    label: String,
+    cookie_file: PathBuf,
+    is_poll: bool,
+) -> AuthOutcome {
+    use crate::auth::{ExtractError, extract_from_browser, open_in_browser, write_cookie_file};
+    let cookie = match extract_from_browser(&spec).await {
+        Ok(c) => c,
+        Err(ExtractError::NotSignedIn { .. }) => {
+            return if is_poll {
+                AuthOutcome::PollPending
+            } else {
+                let browser_opened = open_in_browser(&spec);
+                AuthOutcome::NeedsBrowser {
+                    spec,
+                    label,
+                    browser_opened,
+                }
+            };
+        }
+        Err(ExtractError::Other(message)) => return AuthOutcome::Error { message },
+    };
+
+    match YtMusic::from_cookie(&cookie).await {
+        Ok(yt) if login_state(&yt).await == Some(false) => {
+            if is_poll {
+                AuthOutcome::PollPending
+            } else {
+                let browser_opened = open_in_browser(&spec);
+                AuthOutcome::NeedsBrowser {
+                    spec,
+                    label,
+                    browser_opened,
+                }
+            }
+        }
+        Ok(yt) => match write_cookie_file(&cookie_file, &cookie) {
+            Ok(()) => AuthOutcome::SignedIn { client: yt },
+            Err(e) => AuthOutcome::Error {
+                message: format!("Signed in, but couldn't save the cookie file: {e}"),
+            },
+        },
+        Err(e) => AuthOutcome::Error {
+            message: format!(
+                "Couldn't sign in with {label} ({}). Check your internet connection and try again.",
+                explain(&e.to_string()).0
+            ),
+        },
+    }
+}
 
 pub async fn run(cookie_file: PathBuf, mut reqs: UnboundedReceiver<YtmReq>, events: UnboundedSender<YtmEvent>) {
     let mut cookie_stamp = file_stamp(&cookie_file);
-    let mut client = connect(&cookie_file, &events).await;
+    let mut client = connect(&cookie_file, &events, None).await;
     // Requests run as separate tasks; one that finds the login rejected
     // reports it here so the client can drop back to signed-out.
     let (expired_tx, mut expired_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    // Interactive sign-in tasks (browser cookie extraction / paste) report here
+    // so yt-dlp never blocks search or radio requests.
+    let (auth_done_tx, mut auth_done_rx) = tokio::sync::mpsc::unbounded_channel::<AuthOutcome>();
     let mut watch = tokio::time::interval(std::time::Duration::from_secs(2));
     watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             req = reqs.recv() => {
                 let Some(req) = req else { break };
+                match req {
+                    YtmReq::ImportBrowser { spec, label } => {
+                        let cookie_file = cookie_file.clone();
+                        let auth_done_tx = auth_done_tx.clone();
+                        tokio::spawn(async move {
+                            let outcome = verify_browser_login(spec, label, cookie_file, false).await;
+                            let _ = auth_done_tx.send(outcome);
+                        });
+                        continue;
+                    }
+                    YtmReq::PollBrowser { spec, label } => {
+                        let cookie_file = cookie_file.clone();
+                        let auth_done_tx = auth_done_tx.clone();
+                        tokio::spawn(async move {
+                            let outcome = verify_browser_login(spec, label, cookie_file, true).await;
+                            let _ = auth_done_tx.send(outcome);
+                        });
+                        continue;
+                    }
+                    YtmReq::OpenBrowser { spec } => {
+                        crate::auth::open_in_browser(&spec);
+                        continue;
+                    }
+                    YtmReq::SaveCookie { raw } => {
+                        let cookie_file = cookie_file.clone();
+                        let auth_done_tx = auth_done_tx.clone();
+                        tokio::spawn(async move {
+                            let outcome = match crate::auth::normalize_pasted_cookie(&raw) {
+                                Err(e) => AuthOutcome::Error { message: e.to_string() },
+                                Ok(cookie) => match YtMusic::from_cookie(&cookie).await {
+                                    Ok(yt) if login_state(&yt).await == Some(false) => AuthOutcome::Error {
+                                        message: "That cookie isn't signed in to YouTube Music (or has expired). \
+                                                  Sign in at music.youtube.com and copy a fresh Cookie header."
+                                            .into(),
+                                    },
+                                    Ok(yt) => match crate::auth::write_cookie_file(&cookie_file, &cookie) {
+                                        Ok(()) => AuthOutcome::SignedIn { client: yt },
+                                        Err(e) => AuthOutcome::Error {
+                                            message: format!("Couldn't save cookie file: {e}"),
+                                        },
+                                    },
+                                    Err(e) => AuthOutcome::Error {
+                                        message: format!(
+                                            "Couldn't sign in with the pasted cookie ({}).",
+                                            explain(&e.to_string()).0
+                                        ),
+                                    },
+                                },
+                            };
+                            let _ = auth_done_tx.send(outcome);
+                        });
+                        continue;
+                    }
+                    YtmReq::SignOut => {
+                        match crate::auth::remove_cookie_file(&cookie_file) {
+                            Ok(_) => {
+                                cookie_stamp = file_stamp(&cookie_file);
+                                tracing::info!("signed out by user");
+                                let _ = events.send(YtmEvent::Auth {
+                                    logged_in: false,
+                                    message: None,
+                                });
+                                if matches!(client, Some(Client::Auth(_))) {
+                                    client = YtMusic::new_unauthenticated().await.ok().map(Client::Anon);
+                                }
+                            }
+                            Err(e) => {
+                                let _ = events.send(YtmEvent::Failed {
+                                    token: None,
+                                    message: format!("Couldn't sign out: {e}"),
+                                });
+                            }
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
                 // If startup happened offline, reconnect lazily once the network is back.
                 if client.is_none() {
-                    client = connect(&cookie_file, &events).await;
+                    client = connect(&cookie_file, &events, None).await;
                 }
                 let Some(c) = client.clone() else {
                     let _ = events.send(offline_event(req));
@@ -208,6 +386,39 @@ pub async fn run(cookie_file: PathBuf, mut reqs: UnboundedReceiver<YtmReq>, even
                         let _ = expired_tx.send(());
                     }
                 });
+            }
+            Some(outcome) = auth_done_rx.recv() => {
+                match outcome {
+                    AuthOutcome::SignedIn { client: yt } => {
+                        cookie_stamp = file_stamp(&cookie_file);
+                        client = Some(Client::Auth(yt));
+                        let _ = events.send(YtmEvent::Auth {
+                            logged_in: true,
+                            message: None,
+                        });
+                    }
+                    AuthOutcome::NeedsBrowser {
+                        spec,
+                        label,
+                        browser_opened,
+                    } => {
+                        let _ = events.send(YtmEvent::AuthNeedsBrowser {
+                            spec,
+                            label,
+                            browser_opened,
+                        });
+                    }
+                    AuthOutcome::PollPending => {
+                        let _ = events.send(YtmEvent::AuthPollPending);
+                    }
+                    AuthOutcome::Error { message } => {
+                        tracing::warn!("sign-in failed: {message}");
+                        let _ = events.send(YtmEvent::Auth {
+                            logged_in: matches!(client, Some(Client::Auth(_))),
+                            message: Some(message),
+                        });
+                    }
+                }
             }
             Some(()) = expired_rx.recv() => {
                 if matches!(client, Some(Client::Auth(_))) {
@@ -229,7 +440,7 @@ pub async fn run(cookie_file: PathBuf, mut reqs: UnboundedReceiver<YtmReq>, even
                     cookie_stamp = stamp;
                     if stamp.is_some() {
                         tracing::info!("cookie file changed; reconnecting");
-                        if let Some(c) = connect(&cookie_file, &events).await {
+                        if let Some(c) = connect(&cookie_file, &events, None).await {
                             client = Some(c);
                         }
                     } else if matches!(client, Some(Client::Auth(_))) {
@@ -304,17 +515,26 @@ fn file_stamp(path: &std::path::Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
-async fn connect(cookie_file: &PathBuf, events: &UnboundedSender<YtmEvent>) -> Option<Client> {
+async fn connect(cookie_file: &PathBuf, events: &UnboundedSender<YtmEvent>, source: Option<&str>) -> Option<Client> {
+    let mut auth_sent = false;
     if cookie_file.exists() {
         match YtMusic::from_cookie_file(cookie_file).await {
             // An expired cookie often isn't refused outright: YouTube just
             // answers as if signed out. Check before claiming "signed in".
             Ok(yt) if login_state(&yt).await == Some(false) => {
                 tracing::warn!("cookie accepted but YouTube reports logged_in=0");
+                let msg = match source {
+                    Some(src) => format!(
+                        "The cookies from {src} aren't signed in to YouTube Music (or expired). \
+                         Open music.youtube.com in that browser, sign in, and try again."
+                    ),
+                    None => SIGNED_OUT.into(),
+                };
                 let _ = events.send(YtmEvent::Auth {
                     logged_in: false,
-                    message: Some(SIGNED_OUT.into()),
+                    message: Some(msg),
                 });
+                auth_sent = true;
             }
             Ok(yt) => {
                 let _ = events.send(YtmEvent::Auth {
@@ -325,20 +545,28 @@ async fn connect(cookie_file: &PathBuf, events: &UnboundedSender<YtmEvent>) -> O
             }
             Err(e) => {
                 tracing::warn!("cookie auth failed: {e}");
+                let msg = match source {
+                    Some(src) => format!(
+                        "Couldn't sign in with {src} ({}). Try another browser or check your internet connection.",
+                        explain(&e.to_string()).0
+                    ),
+                    None => format!(
+                        "Couldn't sign in with the saved cookie ({}). Continuing signed out; \
+                         open the Library tab (b) to sign in again, or run `pova login`.",
+                        explain(&e.to_string()).0
+                    ),
+                };
                 let _ = events.send(YtmEvent::Auth {
                     logged_in: false,
-                    message: Some(format!(
-                        "Couldn't sign in with the saved cookie ({}). Continuing signed out; \
-                         run `pova-import-cookie chrome` to sign in again.",
-                        explain(&e.to_string()).0
-                    )),
+                    message: Some(msg),
                 });
+                auth_sent = true;
             }
         }
     }
     match YtMusic::new_unauthenticated().await {
         Ok(yt) => {
-            if !cookie_file.exists() {
+            if !auth_sent {
                 let _ = events.send(YtmEvent::Auth {
                     logged_in: false,
                     message: None,
@@ -348,6 +576,12 @@ async fn connect(cookie_file: &PathBuf, events: &UnboundedSender<YtmEvent>) -> O
         }
         Err(e) => {
             tracing::error!("ytm connect failed: {e}");
+            if !auth_sent {
+                let _ = events.send(YtmEvent::Auth {
+                    logged_in: false,
+                    message: None,
+                });
+            }
             let _ = events.send(YtmEvent::Failed {
                 token: None,
                 message: format!("Couldn't reach YouTube Music: {}", explain(&e.to_string()).0),
@@ -411,8 +645,8 @@ async fn handle(client: &Client, req: YtmReq) -> (YtmEvent, bool) {
             let Client::Auth(yt) = client else {
                 let ev = YtmEvent::Failed {
                     token: None,
-                    message: "Liking songs needs you to be signed in. Run `pova-import-cookie chrome` \
-                              (or firefox) in another terminal, then try again."
+                    message: "Liking songs needs you to be signed in. Open the Library tab (b) to sign in, \
+                              or run `pova login`."
                         .into(),
                 };
                 return (ev, false);
@@ -441,8 +675,8 @@ async fn handle(client: &Client, req: YtmReq) -> (YtmEvent, bool) {
             let Client::Auth(yt) = client else {
                 let ev = YtmEvent::Failed {
                     token: None,
-                    message: "Disliking songs needs you to be signed in. Run `pova-import-cookie chrome` \
-                              (or firefox) in another terminal, then try again."
+                    message: "Disliking songs needs you to be signed in. Open the Library tab (b) to sign in, \
+                              or run `pova login`."
                         .into(),
                 };
                 return (ev, false);
@@ -579,6 +813,13 @@ async fn handle(client: &Client, req: YtmReq) -> (YtmEvent, bool) {
                 },
             },
         },
+        YtmReq::ImportBrowser { .. }
+        | YtmReq::PollBrowser { .. }
+        | YtmReq::OpenBrowser { .. }
+        | YtmReq::SaveCookie { .. }
+        | YtmReq::SignOut => {
+            unreachable!("handled directly in ytm::run")
+        }
     };
     (ev, rejected)
 }
@@ -620,7 +861,7 @@ pub fn explain(raw: &str) -> (String, bool) {
             .filter(|m| !m.is_empty());
         let hint = match code.as_str() {
             "429" => " YouTube is rate-limiting requests; wait a minute and try again.",
-            "403" => " YouTube refused the request; signing in again may help (`pova-import-cookie chrome`).",
+            "403" => " YouTube refused the request; signing in again from the Library tab (b) or `pova login` may help.",
             c if c.starts_with('5') => " YouTube Music is having trouble; try again in a moment.",
             _ => "",
         };
@@ -677,7 +918,7 @@ fn need_auth(client: &Client) -> anyhow::Result<&YtMusic<BrowserToken>> {
     match client {
         Client::Auth(yt) => Ok(yt),
         Client::Anon(_) => anyhow::bail!(
-            "Your library needs you to be signed in. Run `pova-import-cookie chrome` (or firefox) in another terminal; pova signs in by itself once the cookie is saved."
+            "Your library needs you to be signed in. Open the Library tab (b) to sign in, or run `pova login`."
         ),
     }
 }
@@ -1133,7 +1374,7 @@ mod correction_tests {
             "Http error code 401 recieved in response. Message: <You must be signed in to perform this operation.>.";
         let (text, auth) = explain(raw);
         assert!(auth);
-        assert!(text.contains("pova-import-cookie"));
+        assert!(text.contains("pova login"));
     }
 
     #[test]

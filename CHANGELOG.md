@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **One-click browser sign-in and `pova login` / `pova logout`.** The Library
+  tab now detects your installed browsers so you can sign in directly inside
+  pova (with Enter or a click). If you aren't signed in to `music.youtube.com`
+  in that browser yet, pova opens it for you and signs in automatically once
+  you finish signing in with Google. Also adds custom browser profiles, a
+  masked manual-paste fallback, `Sign in` / `Sign out` in the Esc menu,
+  clickable login status in the player border, and `pova login` / `pova logout`
+  CLI commands without needing `python3`.
+
 ## 1.2.0 — even loudness, dislike, notifications
 
 - **Even loudness between songs.** mpv's loudness filter evens out the

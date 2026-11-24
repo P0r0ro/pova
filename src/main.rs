@@ -2,6 +2,7 @@
 
 mod app;
 mod art;
+mod auth;
 mod config;
 mod control;
 mod keymap;
@@ -60,14 +61,21 @@ struct Cli {
     /// Log verbosity written to ~/.cache/pova/pova.log (error, warn, info, debug, trace).
     #[arg(long, default_value = "info")]
     log_level: tracing::Level,
-    /// Control a pova that's already running (for keybinds and scripts).
+    /// Control a running pova, or sign in / out.
     #[command(subcommand)]
-    command: Option<Remote>,
+    command: Option<CliCommand>,
 }
 
-/// Commands sent to the running pova.
+/// CLI subcommands (`pova login`, `pova logout`, and remote control commands).
 #[derive(Subcommand, Debug)]
-enum Remote {
+enum CliCommand {
+    /// Sign in to YouTube Music using your browser's cookies (auto-detects browser if omitted).
+    Login {
+        /// Optional browser name or profile, e.g. `firefox`, `chrome`, or `chrome:Profile 2`.
+        browser: Option<String>,
+    },
+    /// Sign out of YouTube Music (removes the saved cookie file).
+    Logout,
     /// Play / pause.
     Toggle,
     /// Resume playback.
@@ -111,24 +119,25 @@ enum Remote {
     },
 }
 
-impl Remote {
-    fn command(self) -> control::Command {
+impl CliCommand {
+    fn into_remote(self) -> Option<control::Command> {
         use control::Command as C;
-        match self {
-            Remote::Toggle => C::Toggle,
-            Remote::Play => C::Play,
-            Remote::Pause => C::Pause,
-            Remote::Next => C::Next,
-            Remote::Prev => C::Prev,
-            Remote::Like => C::Like,
-            Remote::Dislike => C::Dislike,
-            Remote::Volume { amount } => C::Volume(amount),
-            Remote::Seek { amount } => C::Seek(amount),
-            Remote::Add { query } => C::Add(query.join(" ")),
-            Remote::PlayNext { query } => C::PlayNext(query.join(" ")),
-            Remote::PlayNow { query } => C::PlayNow(query.join(" ")),
-            Remote::Status { format } => C::Status(format),
-        }
+        Some(match self {
+            CliCommand::Login { .. } | CliCommand::Logout => return None,
+            CliCommand::Toggle => C::Toggle,
+            CliCommand::Play => C::Play,
+            CliCommand::Pause => C::Pause,
+            CliCommand::Next => C::Next,
+            CliCommand::Prev => C::Prev,
+            CliCommand::Like => C::Like,
+            CliCommand::Dislike => C::Dislike,
+            CliCommand::Volume { amount } => C::Volume(amount),
+            CliCommand::Seek { amount } => C::Seek(amount),
+            CliCommand::Add { query } => C::Add(query.join(" ")),
+            CliCommand::PlayNext { query } => C::PlayNext(query.join(" ")),
+            CliCommand::PlayNow { query } => C::PlayNow(query.join(" ")),
+            CliCommand::Status { format } => C::Status(format),
+        })
     }
 }
 
@@ -136,20 +145,44 @@ fn main() -> anyhow::Result<()> {
     let mut cli = Cli::parse();
     let paths = Paths::new()?;
 
-    if let Some(remote) = cli.command.take() {
-        let socket = control::socket_path(&paths.runtime_dir);
-        return match control::send(&socket, &remote.command()) {
-            Ok(answer) => {
-                if !answer.is_empty() {
-                    println!("{answer}");
+    if let Some(cmd) = cli.command.take() {
+        match cmd {
+            CliCommand::Login { browser } => {
+                let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+                if let Err(e) = rt.block_on(auth::login_cli(&paths.cookie_file(), browser.as_deref())) {
+                    eprintln!("pova: {e}");
+                    std::process::exit(1);
                 }
-                Ok(())
+                return Ok(());
             }
-            Err(e) => {
-                eprintln!("pova: {e}");
-                std::process::exit(1);
+            CliCommand::Logout => {
+                match auth::remove_cookie_file(&paths.cookie_file()) {
+                    Ok(true) => println!("Signed out."),
+                    Ok(false) => println!("Already signed out."),
+                    Err(e) => {
+                        eprintln!("pova: {e}");
+                        std::process::exit(1);
+                    }
+                }
+                return Ok(());
             }
-        };
+            other => {
+                let remote = other.into_remote().expect("non-auth command");
+                let socket = control::socket_path(&paths.runtime_dir);
+                return match control::send(&socket, &remote) {
+                    Ok(answer) => {
+                        if !answer.is_empty() {
+                            println!("{answer}");
+                        }
+                        Ok(())
+                    }
+                    Err(e) => {
+                        eprintln!("pova: {e}");
+                        std::process::exit(1);
+                    }
+                };
+            }
+        }
     }
 
     if cli.list_themes {

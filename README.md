@@ -222,20 +222,24 @@ Press `?` in pova for every key, or read [docs/keys.md](docs/keys.md).
 ## Signing in
 
 Search, playback, radio and lyrics work without an account. To like songs and
-see your library, let pova borrow the YouTube Music login your browser already
-has. If you're signed in to <https://music.youtube.com>:
+see your library, open the **Library** tab (`b`), pick your browser (e.g.
+**Sign in with Firefox**), and press Enter (or click it). If you're already
+signed in to <https://music.youtube.com> there, pova signs in immediately; if
+not, pova opens YouTube Music in your browser so you can sign in with Google
+and picks it up automatically.
+
+Prefer the command line?
 
 ```sh
-pova-import-cookie chrome              # installed with the .deb / .rpm
-./scripts/import-cookie.sh chrome      # from a source checkout
-# works with firefox, chromium, brave, edge, vivaldi, opera too
+pova login                             # auto-detects your browser
+pova login chrome                      # or firefox, chromium, brave, edge, vivaldi, opera
+pova logout                            # sign out
 ```
 
-A couple of seconds later the player box says **● signed in**, no restart
-needed. If Google ever expires the cookie, pova tells you; run the script again.
-The cookie is saved in
-`~/.config/pova/cookie.txt`, readable only by you. Treat it like a password.
-No script? [docs/signing-in.md](docs/signing-in.md) has the manual way.
+pova reads only your `youtube.com` cookies via `yt-dlp`, saves them in
+`~/.config/pova/cookie.txt` (mode `600`, readable only by you), and signs in
+right away with no restart. Treat `cookie.txt` like a password. See
+[docs/signing-in.md](docs/signing-in.md) for browser profiles and manual paste.
 
 ## Meet the cat
 

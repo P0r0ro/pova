@@ -105,7 +105,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             let state = *state;
             draw_menu(f, app, area, state.selected().unwrap_or(0));
         }
-        Overlay::Confirm { question, yes, .. } => {
+        Overlay::Confirm { question, on_yes, yes } => {
             let width = 60.min(area.width.saturating_sub(4)).max(24);
             let lines = crate::ui::wrap_text(question, width.saturating_sub(4) as usize);
             let text_h = lines.len() as u16;
@@ -143,7 +143,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 Span::styled(label, style)
             };
             let buttons = Line::from(vec![
-                button("  Yes, delete  ", *yes, true),
+                button(on_yes.confirm_label(), *yes, true),
                 Span::raw("    "),
                 button("  No  ", !*yes, false),
             ]);
