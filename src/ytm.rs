@@ -100,17 +100,15 @@ pub enum YtmReq {
         playlist_id: String,
         title: String,
     },
-    /// Auto-detect browsers, sign in immediately if already logged in, or
-    /// open `https://music.youtube.com` and wait for the user to sign in.
-    StartSignIn,
     /// Import YouTube Music cookies from a specific browser/profile spec.
     ImportBrowser {
         spec: String,
         label: String,
     },
-    /// Quietly check whether the user has finished signing in across `specs`.
+    /// Quietly check whether the user has finished signing in for `spec`.
     PollSignIn {
-        specs: Vec<String>,
+        spec: String,
+        label: String,
     },
     /// Open `https://music.youtube.com` in the user's browser.
     OpenSignInLink {
@@ -142,10 +140,11 @@ pub enum YtmEvent {
         logged_in: bool,
         message: Option<String>,
     },
-    /// No active browser login was found yet; we opened `https://music.youtube.com`
-    /// and will watch `specs` while the user signs in with Google.
+    /// The chosen browser profile isn't signed in to YouTube Music yet; we opened
+    /// `https://music.youtube.com` and will watch `spec` while the user signs in.
     AuthNeedsBrowser {
-        specs: Vec<String>,
+        spec: String,
+        label: String,
         browser_opened: bool,
     },
     /// A background poll while waiting for browser sign-in didn't find a login yet.
@@ -210,78 +209,27 @@ Open the Library tab (b) to sign in again, or run `pova login`.";
 
 enum AuthOutcome {
     SignedIn { client: YtMusic<BrowserToken> },
-    NeedsBrowser { specs: Vec<String>, browser_opened: bool },
+    NeedsBrowser { spec: String, label: String, browser_opened: bool },
     PollPending,
     Error { message: String },
 }
 
-/// Check every detected browser for an existing YouTube Music login; if none
-/// is signed in yet, open `https://music.youtube.com` and return the readable
-/// browsers to watch while the user finishes signing in.
-async fn start_auto_sign_in(cookie_file: PathBuf) -> AuthOutcome {
-    use crate::auth::{ExtractError, detect_browsers, extract_from_browser, open_in_browser, write_cookie_file};
-    let browsers = detect_browsers();
-    let mut readable = Vec::new();
-    let mut last_error: Option<String> = None;
-
-    for b in &browsers {
-        let cookie = match extract_from_browser(b.id).await {
-            Ok(c) => c,
-            Err(ExtractError::NotSignedIn { .. }) => {
-                readable.push(b.id.to_string());
-                continue;
-            }
-            Err(ExtractError::Other(msg)) => {
-                last_error = Some(msg);
-                continue;
-            }
-        };
-        match YtMusic::from_cookie(&cookie).await {
-            Ok(yt) if login_state(&yt).await == Some(false) => {
-                readable.push(b.id.to_string());
-            }
-            Ok(yt) => {
-                return match write_cookie_file(&cookie_file, &cookie) {
-                    Ok(()) => AuthOutcome::SignedIn { client: yt },
-                    Err(e) => AuthOutcome::Error {
-                        message: format!("Signed in, but couldn't save the cookie file: {e}"),
-                    },
-                };
-            }
-            Err(e) => {
-                last_error = Some(format!(
-                    "Couldn't reach YouTube Music ({}). Check your internet connection and try again.",
-                    explain(&e.to_string()).0
-                ));
-            }
-        }
-    }
-
-    if readable.is_empty()
-        && let Some(msg) = last_error
-    {
-        return AuthOutcome::Error { message: msg };
-    }
-    let specs = if readable.is_empty() {
-        browsers.into_iter().map(|b| b.id.to_string()).collect()
-    } else {
-        readable
-    };
-    let browser_opened = open_in_browser("");
-    AuthOutcome::NeedsBrowser { specs, browser_opened }
-}
-
 /// Extract cookies from a specific browser/profile, verify with YouTube Music
 /// in memory, and only write `cookie_file` once YouTube confirms sign-in.
-async fn verify_browser_login(spec: String, label: String, cookie_file: PathBuf) -> AuthOutcome {
+async fn verify_browser_login(spec: String, label: String, cookie_file: PathBuf, is_poll: bool) -> AuthOutcome {
     use crate::auth::{ExtractError, extract_from_browser, open_in_browser, write_cookie_file};
     let cookie = match extract_from_browser(&spec).await {
         Ok(c) => c,
         Err(ExtractError::NotSignedIn { .. }) => {
-            let browser_opened = open_in_browser(&spec);
-            return AuthOutcome::NeedsBrowser {
-                specs: vec![spec],
-                browser_opened,
+            return if is_poll {
+                AuthOutcome::PollPending
+            } else {
+                let browser_opened = open_in_browser(&spec);
+                AuthOutcome::NeedsBrowser {
+                    spec,
+                    label,
+                    browser_opened,
+                }
             };
         }
         Err(ExtractError::Other(message)) => return AuthOutcome::Error { message },
@@ -289,10 +237,15 @@ async fn verify_browser_login(spec: String, label: String, cookie_file: PathBuf)
 
     match YtMusic::from_cookie(&cookie).await {
         Ok(yt) if login_state(&yt).await == Some(false) => {
-            let browser_opened = open_in_browser(&spec);
-            AuthOutcome::NeedsBrowser {
-                specs: vec![spec],
-                browser_opened,
+            if is_poll {
+                AuthOutcome::PollPending
+            } else {
+                let browser_opened = open_in_browser(&spec);
+                AuthOutcome::NeedsBrowser {
+                    spec,
+                    label,
+                    browser_opened,
+                }
             }
         }
         Ok(yt) => match write_cookie_file(&cookie_file, &cookie) {
@@ -308,28 +261,6 @@ async fn verify_browser_login(spec: String, label: String, cookie_file: PathBuf)
             ),
         },
     }
-}
-
-/// Quietly poll `specs` while waiting for the user to sign in on `music.youtube.com`.
-async fn poll_sign_in(specs: Vec<String>, cookie_file: PathBuf) -> AuthOutcome {
-    use crate::auth::{ExtractError, extract_from_browser, write_cookie_file};
-    for spec in &specs {
-        let cookie = match extract_from_browser(spec).await {
-            Ok(c) => c,
-            Err(ExtractError::NotSignedIn { .. } | ExtractError::Other(_)) => continue,
-        };
-        if let Ok(yt) = YtMusic::from_cookie(&cookie).await
-            && login_state(&yt).await != Some(false)
-        {
-            return match write_cookie_file(&cookie_file, &cookie) {
-                Ok(()) => AuthOutcome::SignedIn { client: yt },
-                Err(e) => AuthOutcome::Error {
-                    message: format!("Signed in, but couldn't save the cookie file: {e}"),
-                },
-            };
-        }
-    }
-    AuthOutcome::PollPending
 }
 
 pub async fn run(cookie_file: PathBuf, mut reqs: UnboundedReceiver<YtmReq>, events: UnboundedSender<YtmEvent>) {
@@ -348,29 +279,20 @@ pub async fn run(cookie_file: PathBuf, mut reqs: UnboundedReceiver<YtmReq>, even
             req = reqs.recv() => {
                 let Some(req) = req else { break };
                 match req {
-                    YtmReq::StartSignIn => {
-                        let cookie_file = cookie_file.clone();
-                        let auth_done_tx = auth_done_tx.clone();
-                        tokio::spawn(async move {
-                            let outcome = start_auto_sign_in(cookie_file).await;
-                            let _ = auth_done_tx.send(outcome);
-                        });
-                        continue;
-                    }
                     YtmReq::ImportBrowser { spec, label } => {
                         let cookie_file = cookie_file.clone();
                         let auth_done_tx = auth_done_tx.clone();
                         tokio::spawn(async move {
-                            let outcome = verify_browser_login(spec, label, cookie_file).await;
+                            let outcome = verify_browser_login(spec, label, cookie_file, false).await;
                             let _ = auth_done_tx.send(outcome);
                         });
                         continue;
                     }
-                    YtmReq::PollSignIn { specs } => {
+                    YtmReq::PollSignIn { spec, label } => {
                         let cookie_file = cookie_file.clone();
                         let auth_done_tx = auth_done_tx.clone();
                         tokio::spawn(async move {
-                            let outcome = poll_sign_in(specs, cookie_file).await;
+                            let outcome = verify_browser_login(spec, label, cookie_file, true).await;
                             let _ = auth_done_tx.send(outcome);
                         });
                         continue;
@@ -461,8 +383,16 @@ pub async fn run(cookie_file: PathBuf, mut reqs: UnboundedReceiver<YtmReq>, even
                             message: None,
                         });
                     }
-                    AuthOutcome::NeedsBrowser { specs, browser_opened } => {
-                        let _ = events.send(YtmEvent::AuthNeedsBrowser { specs, browser_opened });
+                    AuthOutcome::NeedsBrowser {
+                        spec,
+                        label,
+                        browser_opened,
+                    } => {
+                        let _ = events.send(YtmEvent::AuthNeedsBrowser {
+                            spec,
+                            label,
+                            browser_opened,
+                        });
                     }
                     AuthOutcome::PollPending => {
                         let _ = events.send(YtmEvent::AuthPollPending);
@@ -869,8 +799,7 @@ async fn handle(client: &Client, req: YtmReq) -> (YtmEvent, bool) {
                 },
             },
         },
-        YtmReq::StartSignIn
-        | YtmReq::ImportBrowser { .. }
+        YtmReq::ImportBrowser { .. }
         | YtmReq::PollSignIn { .. }
         | YtmReq::OpenSignInLink { .. }
         | YtmReq::SaveCookie { .. }

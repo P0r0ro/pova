@@ -705,16 +705,16 @@ fn library_sign_in(f: &mut Frame, app: &mut App, area: Rect) {
     // Waiting for the user to finish signing in at https://music.youtube.com.
     if let Some(w) = app.library.auth.waiting.clone() {
         let desc = if w.browser_opened {
-            "Sign in with your Google account in the browser tab that opened, or open this link in any browser:"
+            format!("Sign in with your Google account in {} at:", w.label)
         } else {
-            "Open this link in your browser and sign in with your Google account:"
+            format!("Open this link in {} and sign in with Google:", w.label)
         };
-        let desc_lines = crate::ui::wrap_text(desc, text_w);
+        let desc_lines = crate::ui::wrap_text(&desc, text_w);
         let url = crate::auth::YTM_SIGN_IN_URL;
         let status = if w.checking {
-            format!("{} checking for sign-in…", spinner())
+            format!("{} checking {}…", spinner(), w.label)
         } else {
-            format!("{} waiting for sign-in…", spinner())
+            format!("{} waiting for {}…", spinner(), w.label)
         };
         // Title, blank, desc, blank, url, blank, status, blank, primary buttons, cancel.
         let total_h = (1 + 1 + desc_lines.len() + 1 + 1 + 1 + 1 + 1 + 1 + 1) as u16;
@@ -931,9 +931,21 @@ fn library_sign_in(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
 
-    // Default signed-out view: one Sign in button + subtle secondary shortcuts.
-    let sub_lines = crate::ui::wrap_text("Sign in with Google via your browser", text_w);
-    let total_h = (1 + sub_lines.len() + 1 + 1 + 2 + 1) as u16;
+    // Default signed-out view: show the sign-in link right away + every detected
+    // browser profile by name (so multi-profile Brave/Chrome/Firefox works in 1 click).
+    let url = crate::auth::YTM_SIGN_IN_URL;
+    let profiles = app.library.auth.profiles.clone();
+    let selected = app.library.auth.selected.min(profiles.len().saturating_sub(1));
+    // Reserve rows for header + link + prompt + footer hints; scroll list if many profiles.
+    let chrome_h = 9u16;
+    let max_visible = area.height.saturating_sub(chrome_h).clamp(1, 8) as usize;
+    let visible_n = profiles.len().min(max_visible);
+    let scroll = if selected >= visible_n {
+        selected + 1 - visible_n
+    } else {
+        0
+    };
+    let total_h = chrome_h + visible_n as u16;
     let mut y = area.y + area.height.saturating_sub(total_h) / 2;
     let bottom = area.y + area.height;
 
@@ -946,42 +958,94 @@ fn library_sign_in(f: &mut Frame, app: &mut App, area: Rect) {
             .alignment(Alignment::Center),
             Rect::new(area.x, y, area.width, 1),
         );
-        y += 1;
+        y += 2;
     }
-    for l in sub_lines {
-        if y >= bottom {
-            break;
-        }
+    if y < bottom {
         f.render_widget(
-            Paragraph::new(l)
+            Paragraph::new("1. Sign in with Google at:")
                 .alignment(Alignment::Center)
                 .style(Style::new().fg(t.inactive_fg)),
             Rect::new(area.x, y, area.width, 1),
         );
         y += 1;
     }
-    y += 1;
     if y < bottom {
-        let btn = "  Sign in (enter)  ";
-        let bw = (Span::raw(btn).width() as u16).min(area.width);
-        let bx = area.x + area.width.saturating_sub(bw) / 2;
-        let btn_rect = Rect::new(bx, y, bw, 1);
+        let url_w = (Span::raw(url).width() as u16).min(area.width);
+        let ux = area.x + area.width.saturating_sub(url_w) / 2;
+        let url_rect = Rect::new(ux, y, url_w, 1);
         f.render_widget(
             Paragraph::new(Span::styled(
-                btn,
-                Style::new()
-                    .bg(t.selected_bg)
-                    .fg(t.selected_fg)
-                    .add_modifier(Modifier::BOLD),
+                url,
+                Style::new().fg(t.accent).add_modifier(Modifier::UNDERLINED),
             ))
             .alignment(Alignment::Center),
-            btn_rect,
+            url_rect,
         );
-        app.hits.add(btn_rect, Hit::AuthStart);
+        app.hits.add(url_rect, Hit::AuthOpenBrowser);
         y += 2;
     }
     if y < bottom {
-        let prof_lbl = "profile (p)";
+        f.render_widget(
+            Paragraph::new("2. Pick your browser profile:")
+                .alignment(Alignment::Center)
+                .style(Style::new().fg(t.inactive_fg)),
+            Rect::new(area.x, y, area.width, 1),
+        );
+        y += 1;
+    }
+
+    let list_w = area.width.saturating_sub(4).clamp(16, 40);
+    let list_x = area.x + area.width.saturating_sub(list_w) / 2;
+    for (i, prof) in profiles.iter().enumerate().skip(scroll).take(visible_n) {
+        if y >= bottom {
+            break;
+        }
+        let is_sel = i == selected;
+        let prefix = if is_sel { " ▸ " } else { "   " };
+        let tag = if prof.default { "default" } else { "" };
+        let style = if is_sel {
+            Style::new()
+                .bg(t.selected_bg)
+                .fg(t.selected_fg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(t.main_fg)
+        };
+        let row = Rect::new(list_x, y, list_w, 1);
+        let tag_space = if tag.is_empty() { 0 } else { tag.len() + 2 };
+        let max_lbl = (list_w as usize).saturating_sub(3 + tag_space);
+        let lbl = ellipsize(&prof.label, max_lbl);
+        let left_text = format!("{prefix}{lbl}");
+        let left_w = Span::raw(left_text.as_str()).width();
+        let tag_w = Span::raw(tag).width();
+        let pad = (list_w as usize).saturating_sub(left_w + tag_w + usize::from(!tag.is_empty()));
+        let mut spans = vec![Span::styled(left_text, style)];
+        if !tag.is_empty() && pad >= 1 {
+            spans.push(Span::styled(" ".repeat(pad), style));
+            spans.push(Span::styled(
+                format!("{tag} "),
+                if is_sel { style } else { Style::new().fg(t.inactive_fg) },
+            ));
+        } else if pad > 0 {
+            spans.push(Span::styled(" ".repeat(pad), style));
+        }
+        f.render_widget(Paragraph::new(Line::from(spans)).style(style), row);
+        app.hits.add(row, Hit::AuthProfile(i));
+        y += 1;
+    }
+
+    y += 1;
+    if y < bottom {
+        f.render_widget(
+            Paragraph::new("↑↓ select · enter sign in · o open link")
+                .alignment(Alignment::Center)
+                .style(Style::new().fg(t.inactive_fg)),
+            Rect::new(area.x, y, area.width, 1),
+        );
+        y += 1;
+    }
+    if y < bottom {
+        let prof_lbl = "other profile (p)";
         let sep = "  ·  ";
         let paste_lbl = "paste cookie (c)";
         let pw = Span::raw(prof_lbl).width() as u16;

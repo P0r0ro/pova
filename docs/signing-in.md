@@ -10,19 +10,16 @@ the login your browser already has.
 ### Inside pova (easiest)
 
 1. Open the **Library** tab (`b`), or click **○ signed out** in the player border.
-2. Press **Enter** (or click **Sign in**).
+2. If you aren't signed in yet, open `https://music.youtube.com` (Shift+click / click the link or press `o`) and sign in with Google.
+3. Pick your browser profile (e.g. **Brave — Personal**, **Chrome — Work**, **Firefox**) and press **Enter** (or click it).
 
-If you're already signed in to <https://music.youtube.com> in any browser on
-your machine, pova signs in right away. If not, pova displays and opens the
-<https://music.youtube.com> link so you can sign in with your Google account in
-any browser, and picks it up automatically once you're done.
+pova reads your local browser profile names (`Local State` for Brave/Chrome/Chromium/Edge/Vivaldi, `profiles.ini` for Firefox) without touching any cookie database until you choose one. If the profile you picked isn't signed in yet, pova opens `https://music.youtube.com` in that profile and waits until you finish signing in.
 
 Under the hood, pova reads only the `youtube.com` cookies through `yt-dlp` and
 saves them to `~/.config/pova/cookie.txt` (mode `600`). On KDE/GNOME, your
-desktop keyring may ask to unlock Chromium/Chrome cookies.
+desktop keyring may ask to unlock Chromium/Brave/Chrome cookies.
 
-Need a specific browser profile? Press `p` (or click **profile (p)**) and enter
-something like `chrome:Profile 2` or `firefox:work`.
+Need a custom browser path or keyring override? Press `p` (or click **other profile (p)**) and enter something like `brave+kwallet:Profile 2`.
 
 To sign out again, open the Esc menu and choose **Sign out** (or click
 **● signed in**).
