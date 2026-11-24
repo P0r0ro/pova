@@ -13,6 +13,7 @@ on:
       - "Cargo.lock"
       - "scripts/import-cookie.sh"
       - "scripts/test-packages.sh"
+      - "scripts/apt-repo.sh"
       - ".github/workflows/packages.yml"
   schedule:
     - cron: "17 5 * * 1" # Mondays 05:17 UTC
@@ -81,6 +82,26 @@ jobs:
             bin) file=out/pova ;;
           esac
           scripts/test-packages.sh "$KIND" "$file" "$IMAGE"
+
+  apt-repo:
+    # Builds the apt repository from this PR's .deb with a throwaway key and
+    # installs pova from it, the way users add it (scripts/apt-repo.sh).
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts
+      - uses: actions/download-artifact@v8
+        with:
+          name: packages
+          path: out
+      - name: Build the repository and apt install from it
+        run: |
+          mkdir debs && cp out/*.deb debs/
+          scripts/apt-repo.sh build debs site
+          scripts/apt-repo.sh test site debian:stable
+          scripts/apt-repo.sh test site ubuntu:24.04
 
   copr-spec:
     # The COPR spec builds from source with vendored crates, offline. Make

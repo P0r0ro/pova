@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **apt repository** for Debian, Ubuntu, Linux Mint and Pop!_OS: add it once
+  and pova updates with `sudo apt upgrade`. It serves the same signed `.deb`
+  as the release page. See the README for the four setup lines.
+
 ## 1.2.0 — even loudness, dislike, notifications
 
 - **Even loudness between songs.** mpv's loudness filter evens out the
