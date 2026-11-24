@@ -43,8 +43,9 @@ kitty shows real album art (other terminals get a blocky version).
 | Method | Best for | Installs mpv, yt-dlp and the PipeWire tools for you |
 |---|---|---|
 | [Fedora COPR](#fedora-copr) | Fedora: one command, updates with your system | yes |
+| [apt repository](#debian-and-ubuntu-apt) | Debian, Ubuntu, Linux Mint, Pop!_OS: updates with your system | yes |
 | [`.rpm` package](#fedora-rpm) | Fedora and other dnf-based distros, without adding a repository | yes |
-| [`.deb` package](#debian-and-ubuntu-deb) | Debian, Ubuntu, Linux Mint, Pop!_OS | yes |
+| [`.deb` package](#debian-and-ubuntu-deb) | apt-based distros, without adding a repository | yes |
 | [AppImage](#appimage) | any distro, nothing to install | no |
 | [Prebuilt binary](#prebuilt-binary) | any distro, a single file in your `PATH` | no |
 | [crates.io](#from-cratesio-or-source) | Rust users, other CPU architectures | no |
@@ -52,14 +53,8 @@ kitty shows real album art (other terminals get a blocky version).
 Every file is on the [latest release](https://github.com/P0r0ro/pova/releases/latest)
 page, with a `.sha256` checksum next to it. The commands below use version 1.2.0.
 
-**Coming soon:** more package repositories, so updates arrive through your
-normal system updates. The AUR package is built and tested and waits on an
-account; the Ubuntu PPA comes after it.
-
-| Where | Command |
-|---|---|
-| Arch (AUR) | `yay -S pova-bin` |
-| Ubuntu (PPA) | `sudo add-apt-repository ppa:p0r0ro/pova && sudo apt install pova` |
+**Coming soon:** the Arch AUR package (`yay -S pova-bin`). It's built and
+tested, and waits on an account.
 
 ### Fedora (COPR)
 
@@ -73,6 +68,23 @@ sudo dnf install pova
 ```
 
 Built for Fedora 43, 44, 45 and rawhide.
+
+### Debian and Ubuntu (apt)
+
+Add pova's apt repository once, and from then on pova updates with
+`sudo apt upgrade` like everything else. `apt` pulls in mpv, yt-dlp and
+pipewire-bin, and pova shows up in your app menu. Works on Debian, Ubuntu,
+Linux Mint, Pop!_OS and other apt-based distros.
+
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://p0r0ro.github.io/pova/apt/pova.gpg | sudo tee /etc/apt/keyrings/pova.gpg > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/pova.gpg] https://p0r0ro.github.io/pova/apt stable main" | sudo tee /etc/apt/sources.list.d/pova.list
+sudo apt update && sudo apt install pova
+```
+
+The repository holds the same `.deb` as the release page, signed with pova's
+own key.
 
 ### Fedora (.rpm)
 
