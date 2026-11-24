@@ -209,17 +209,10 @@ pub const SIGNED_OUT: &str = "YouTube Music signed you out: the saved login cook
 Open the Library tab (b) to sign in again, or run `pova login`.";
 
 enum AuthOutcome {
-    SignedIn {
-        client: YtMusic<BrowserToken>,
-    },
-    NeedsBrowser {
-        specs: Vec<String>,
-        browser_opened: bool,
-    },
+    SignedIn { client: YtMusic<BrowserToken> },
+    NeedsBrowser { specs: Vec<String>, browser_opened: bool },
     PollPending,
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 /// Check every detected browser for an existing YouTube Music login; if none

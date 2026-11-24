@@ -4108,11 +4108,7 @@ mod playlist_tests {
 
         // Pressing 'o' reopens the link; Esc cancels waiting cleanly.
         key(&mut app, KeyCode::Char('o'));
-        assert!(
-            reqs(&mut rx)
-                .iter()
-                .any(|r| matches!(r, YtmReq::OpenSignInLink { .. }))
-        );
+        assert!(reqs(&mut rx).iter().any(|r| matches!(r, YtmReq::OpenSignInLink { .. })));
         key(&mut app, KeyCode::Esc);
         assert!(app.library.auth.waiting.is_none());
     }
