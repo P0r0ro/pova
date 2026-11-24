@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.1 — apt repository, Liked songs fix
 
 - **apt repository** for Debian, Ubuntu, Linux Mint and Pop!_OS: add it once
   and pova updates with `sudo apt upgrade`. It serves the same signed `.deb`
