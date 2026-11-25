@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Fixed: nothing played after clearing the queue.** With autoplay on, `C`
+  now keeps the current song and fetches fresh similar songs shortly before
+  it ends, so the music carries on by itself. Autoplay in general now fetches
+  the next songs a little before the last one ends.
+- **`r` on the playing song** (Now Playing, or the queue with nothing
+  selected) starts a radio without interrupting it: the song keeps playing
+  and only the songs after it are replaced.
+
 ## 1.2.3 — sign in from inside pova
 
 - **One-click browser profile sign-in and `pova login` / `pova logout`.** The

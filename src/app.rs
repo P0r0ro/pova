@@ -432,12 +432,20 @@ pub enum EnqueueMode {
     PlayNow,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RadioMode {
     /// Automatic continuation when the queue runs out.
     Autoplay,
     /// User pressed `r`: replace the queue with seed + radio.
     Start,
+    /// User pressed `r` on the song that's playing: keep it playing and
+    /// replace only what comes after it.
+    Refill,
 }
+
+/// Seconds before the end of the last song at which autoplay fetches more,
+/// so the next song is ready before this one finishes.
+const AUTOPLAY_LEAD: f64 = 25.0;
 
 pub struct Channels {
     pub player: UnboundedSender<PlayerCmd>,
@@ -1173,6 +1181,9 @@ impl App {
             }
             PlayerEvent::TimePos(t) => {
                 self.player.time = t;
+                if self.player.duration > 0.0 && self.player.duration - t <= AUTOPLAY_LEAD {
+                    self.maybe_autoplay();
+                }
                 if t > 0.0 {
                     self.consecutive_errors = 0;
                     if let Some((t0, direct)) = self.start_timer.take() {
@@ -1421,6 +1432,23 @@ impl App {
                         } else {
                             self.sync_next();
                         }
+                    }
+                    Some(RadioMode::Refill) => {
+                        // Only if that song is still the one playing.
+                        if self.current().map(|t| t.video_id.as_str()) != Some(seed.as_str()) {
+                            return;
+                        }
+                        self.queue.truncate_after_current();
+                        let fresh: Vec<Track> = tracks
+                            .into_iter()
+                            .filter(|t| !self.queue.contains(&t.video_id))
+                            .collect();
+                        let n = fresh.len();
+                        self.queue.append(fresh);
+                        self.autoplay_requested = Some(seed);
+                        self.queue_state.select(self.queue.current);
+                        self.sync_next();
+                        self.flash(format!("Radio: {n} similar songs up next"), false);
                     }
                     Some(RadioMode::Start) => {
                         let seed_track = self
@@ -2395,7 +2423,12 @@ impl App {
             }
             Radio => {
                 let seed = match self.tab {
-                    Tab::Queue => self.queue_state.selected().and_then(|i| self.queue.get(i)).cloned(),
+                    Tab::Queue => self
+                        .queue_state
+                        .selected()
+                        .and_then(|i| self.queue.get(i))
+                        .or_else(|| self.current())
+                        .cloned(),
                     Tab::Search => self
                         .search
                         .stack
@@ -2413,7 +2446,9 @@ impl App {
                     _ => self.current().cloned(),
                 };
                 if let Some(t) = seed {
-                    self.radio.insert(t.video_id.clone(), RadioMode::Start);
+                    let playing = self.current().is_some_and(|c| c.video_id == t.video_id);
+                    let mode = if playing { RadioMode::Refill } else { RadioMode::Start };
+                    self.radio.insert(t.video_id.clone(), mode);
                     let _ = self.tx.ytm.send(YtmReq::Radio { seed: t.video_id });
                     self.flash(format!("Starting radio from {}…", t.title), false);
                 }
@@ -2439,7 +2474,22 @@ impl App {
                 self.queue.clear_upcoming();
                 self.queue_state.select(self.queue.current);
                 self.sync_next();
-                self.flash("Queue cleared", false);
+                // The cleared songs may have come from autoplay: forget that
+                // radio (and drop one still on its way) so a fresh one is
+                // fetched near the end of this song.
+                if let Some(seed) = self.autoplay_requested.take()
+                    && self.radio.get(&seed) == Some(&RadioMode::Autoplay)
+                {
+                    self.radio.remove(&seed);
+                }
+                if self.cfg.autoplay
+                    && self.queue.repeat == crate::player::queue::Repeat::Off
+                    && self.current().is_some()
+                {
+                    self.flash("Queue cleared (autoplay on)", false);
+                } else {
+                    self.flash("Queue cleared", false);
+                }
             }
             Refresh => match self.tab {
                 Tab::Search => {
@@ -3322,6 +3372,68 @@ mod search_tests {
         app.on_ytm(YtmEvent::Disliked { video_id: "a".into() });
         assert!(!is_liked(&app.likes, &track("a")), "a dislike replaces the like");
         assert_eq!(app.queue.get(0).unwrap().liked, Some(false));
+    }
+
+    #[test]
+    fn clearing_the_queue_fetches_a_fresh_radio_near_the_end() {
+        let (mut app, mut rx) = signed_in(&[]);
+        app.queue.replace(vec![track("a")], 0);
+        app.play_index(0); // last song starts: autoplay asks for a radio of "a"
+        assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|r| matches!(r, YtmReq::Radio { .. })));
+        app.on_ytm(YtmEvent::Radio {
+            seed: "a".into(),
+            tracks: vec![track("b"), track("c")],
+        });
+        assert_eq!(app.queue.len(), 3);
+
+        app.dispatch(Action::ClearQueue);
+        assert_eq!(app.queue.len(), 1, "only the playing song stays");
+        assert!(
+            app.flash
+                .as_ref()
+                .is_some_and(|f| f.text == "Queue cleared (autoplay on)")
+        );
+        // Mid-song: nothing yet, the cleared songs don't come straight back.
+        app.on_player(PlayerEvent::Duration(200.0));
+        app.on_player(PlayerEvent::TimePos(60.0));
+        assert!(rx.try_recv().is_err());
+        // Near the end: a fresh radio is fetched (this used to never happen).
+        app.on_player(PlayerEvent::TimePos(180.0));
+        assert!(matches!(rx.try_recv(), Ok(YtmReq::Radio { seed }) if seed == "a"));
+        app.on_ytm(YtmEvent::Radio {
+            seed: "a".into(),
+            tracks: vec![track("d"), track("e")],
+        });
+        assert_eq!(
+            app.queue.get(1).unwrap().video_id,
+            "d",
+            "fresh songs follow the current one"
+        );
+        assert_eq!(app.queue.current, Some(0), "the playing song isn't interrupted");
+    }
+
+    #[test]
+    fn r_on_the_playing_song_replaces_only_whats_next() {
+        let (mut app, mut rx) = signed_in(&[]);
+        app.queue
+            .replace(vec![track("p"), track("a"), track("b"), track("c")], 1);
+        app.play_index(1);
+        while rx.try_recv().is_ok() {}
+        app.set_tab(Tab::Queue);
+        app.queue_state.select(None);
+        app.dispatch(Action::Radio);
+        assert!(matches!(rx.try_recv(), Ok(YtmReq::Radio { seed }) if seed == "a"));
+        app.on_ytm(YtmEvent::Radio {
+            seed: "a".into(),
+            tracks: vec![track("a"), track("x"), track("y")],
+        });
+        let ids: Vec<&str> = app.queue.entries.iter().map(|e| e.track.video_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["p", "a", "x", "y"],
+            "b and c replaced; a keeps playing and p stays as history"
+        );
+        assert_eq!(app.queue.current, Some(1));
     }
 
     #[test]
