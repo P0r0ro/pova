@@ -393,7 +393,9 @@ fn offline_event(req: YtmReq) -> YtmEvent {
 /// Whether YouTube treats this client as signed in, from the `logged_in`
 /// flag it puts in every response. None if the check itself failed.
 async fn login_state(yt: &Authed) -> Option<bool> {
-    let raw = yt.post_raw("browse", browse_body("FEmusic_liked_playlists"), Vec::new()).await;
+    let raw = yt
+        .post_raw("browse", browse_body("FEmusic_liked_playlists"), Vec::new())
+        .await;
     match raw {
         Ok(raw) => {
             let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -580,7 +582,10 @@ fn json_text(v: &Value) -> Option<String> {
         }
     }
     if let Some(runs) = v.get("runs").and_then(Value::as_array) {
-        let joined: String = runs.iter().filter_map(|r| r.get("text").and_then(Value::as_str)).collect();
+        let joined: String = runs
+            .iter()
+            .filter_map(|r| r.get("text").and_then(Value::as_str))
+            .collect();
         let trimmed = joined.trim();
         if !trimmed.is_empty() {
             return Some(trimmed.to_string());
@@ -637,9 +642,7 @@ fn parse_account_item(item: &Value, default_auth_user: &str) -> Option<AccountIn
             page_id = Some(pid.to_string());
         }
         if page_id.is_none()
-            && let Some(ds) = tok
-                .pointer("/datasyncIdToken/datasyncIdToken")
-                .and_then(Value::as_str)
+            && let Some(ds) = tok.pointer("/datasyncIdToken/datasyncIdToken").and_then(Value::as_str)
             && let Some((head, tail)) = ds.split_once("||")
             && !head.is_empty()
             && !tail.is_empty()
@@ -647,9 +650,7 @@ fn parse_account_item(item: &Value, default_auth_user: &str) -> Option<AccountIn
         {
             page_id = Some(head.to_string());
         }
-        if let Some(url) = tok
-            .pointer("/accountSigninToken/signinUrl")
-            .and_then(Value::as_str)
+        if let Some(url) = tok.pointer("/accountSigninToken/signinUrl").and_then(Value::as_str)
             && let Some(u) = extract_authuser_param(url)
         {
             auth_user = Some(u);
