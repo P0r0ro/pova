@@ -713,6 +713,8 @@ fn library_sign_in(f: &mut Frame, app: &mut App, area: Rect) {
         let url = crate::auth::YTM_SIGN_IN_URL;
         let status = if w.checking {
             format!("{} checking {}…", spinner(), w.label)
+        } else if w.started.elapsed() > crate::app::AUTH_POLL_TIMEOUT {
+            "auto-check paused — press enter to check now".to_string()
         } else {
             format!("{} waiting for {}…", spinner(), w.label)
         };
@@ -933,6 +935,7 @@ fn library_sign_in(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Default signed-out view: show the sign-in link right away + every detected
     // browser profile by name (so multi-profile Brave/Chrome/Firefox works in 1 click).
+    app.library.auth.ensure_profiles();
     let url = crate::auth::YTM_SIGN_IN_URL;
     let profiles = app.library.auth.profiles.clone();
     let selected = app.library.auth.selected.min(profiles.len().saturating_sub(1));

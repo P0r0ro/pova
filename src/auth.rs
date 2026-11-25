@@ -23,10 +23,6 @@ use crate::player::mpv::which;
 /// to prompt the user if locked.
 const EXTRACT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Fallback URL used only if an older `yt-dlp` refuses to dump cookies without
-/// a URL argument.
-const FALLBACK_URL: &str = "https://music.youtube.com/watch?v=dQw4w9WgXcQ";
-
 /// Page opened in the user's browser when they aren't signed in yet.
 pub const YTM_SIGN_IN_URL: &str = "https://music.youtube.com";
 
@@ -603,7 +599,10 @@ fn parse_chromium_local_state(text: &str) -> Vec<(String, String, bool)> {
         .pointer("/profile/last_used")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
-    let Some(cache) = json.pointer("/profile/info_cache").and_then(serde_json::Value::as_object) else {
+    let Some(cache) = json
+        .pointer("/profile/info_cache")
+        .and_then(serde_json::Value::as_object)
+    else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -806,22 +805,11 @@ pub async fn extract_from_browser(spec: &str) -> Result<String, ExtractError> {
 async fn extract_once(spec: &str) -> Result<String, ExtractError> {
     let tmp = TempJar::new().map_err(|e| ExtractError::Other(e.to_string()))?;
 
-    // Fast path: current yt-dlp opens YoutubeDL and saves the extracted cookie
-    // jar on exit without making any network request or solving JS challenges.
-    let stderr = run_ytdlp_export(spec, &tmp.jar, false)
+    // Current yt-dlp opens YoutubeDL and saves the extracted cookie jar on exit
+    // without making any network request or solving JS challenges.
+    let stderr = run_ytdlp_export(spec, &tmp.jar)
         .await
         .map_err(|e| ExtractError::Other(e.to_string()))?;
-    let jar_ready = std::fs::metadata(&tmp.jar).is_ok_and(|m| m.len() > 0);
-
-    // Compatibility fallback for older yt-dlp builds that check URL arguments
-    // before constructing YoutubeDL.
-    let stderr = if !jar_ready && stderr.contains("You must provide at least one URL") && !stderr.contains("ERROR:") {
-        run_ytdlp_export(spec, &tmp.jar, true)
-            .await
-            .map_err(|e| ExtractError::Other(e.to_string()))?
-    } else {
-        stderr
-    };
 
     let jar_text = match std::fs::read_to_string(&tmp.jar) {
         Ok(s) if !s.trim().is_empty() => s,
@@ -830,17 +818,11 @@ async fn extract_once(spec: &str) -> Result<String, ExtractError> {
     parse_netscape_jar(&jar_text, spec)
 }
 
-async fn run_ytdlp_export(spec: &str, jar: &Path, with_url: bool) -> anyhow::Result<String> {
+async fn run_ytdlp_export(spec: &str, jar: &Path) -> anyhow::Result<String> {
     let mut cmd = Command::new("yt-dlp");
     cmd.args(["--no-config", "-q", "--no-warnings", "--cookies-from-browser", spec])
         .arg("--cookies")
         .arg(jar);
-    if with_url {
-        if which("deno").is_none() && which("node").is_some() {
-            cmd.args(["--js-runtimes", "node"]);
-        }
-        cmd.args(["--skip-download", "--no-playlist", FALLBACK_URL]);
-    }
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -864,6 +846,11 @@ async fn run_ytdlp_export(spec: &str, jar: &Path, with_url: bool) -> anyhow::Res
 }
 
 fn explain_extract_error(spec: &str, stderr: &str) -> String {
+    if stderr.contains("You must provide at least one URL") {
+        return "Your yt-dlp is too old to export browser cookies without a URL. \
+                Update yt-dlp (`pipx upgrade yt-dlp`, or via your distro package) and try again."
+            .into();
+    }
     let error_line = stderr
         .lines()
         .map(str::trim)
@@ -1038,17 +1025,31 @@ pub fn remove_cookie_file(path: &Path) -> anyhow::Result<bool> {
 }
 
 /// CLI handler for `pova login [browser]`.
+/// Verifies extracted cookies with YouTube Music in memory before saving so a
+/// signed-out or expired cookie never overwrites a working `cookie.txt`.
 /// If the browser is readable but not signed in to YouTube Music yet, opens
 /// `https://music.youtube.com` and waits for the login to appear.
 pub async fn login_cli(cookie_file: &Path, browser: Option<&str>) -> anyhow::Result<()> {
+    use crate::ytm::{CookieCheckError, verify_cookie};
+
     if let Some(spec) = browser {
         match extract_from_browser(spec).await {
-            Ok(cookie) => {
-                write_cookie_file(cookie_file, &cookie)?;
-                println!("Signed in using {spec} (saved to {}).", cookie_file.display());
-                println!("If pova is already running, it picks this up automatically.");
-                return Ok(());
-            }
+            Ok(cookie) => match verify_cookie(&cookie).await {
+                Ok(_) => {
+                    write_cookie_file(cookie_file, &cookie)?;
+                    println!("Signed in using {spec} (saved to {}).", cookie_file.display());
+                    println!("If pova is already running, it picks this up automatically.");
+                    return Ok(());
+                }
+                Err(CookieCheckError::NotSignedIn) => {
+                    return wait_for_browser_login_cli(cookie_file, spec, spec).await;
+                }
+                Err(CookieCheckError::Other(msg)) => {
+                    anyhow::bail!(
+                        "Couldn't sign in with {spec} ({msg}). Check your internet connection and try again."
+                    );
+                }
+            },
             Err(ExtractError::NotSignedIn { .. }) => {
                 return wait_for_browser_login_cli(cookie_file, spec, spec).await;
             }
@@ -1063,13 +1064,26 @@ pub async fn login_cli(cookie_file: &Path, browser: Option<&str>) -> anyhow::Res
         eprint!("Checking {}… ", p.label);
         let _ = std::io::stderr().flush();
         match extract_from_browser(&p.spec).await {
-            Ok(cookie) => {
-                eprintln!("found YouTube Music login.");
-                write_cookie_file(cookie_file, &cookie)?;
-                println!("Signed in using {} (saved to {}).", p.label, cookie_file.display());
-                println!("If pova is already running, it picks this up automatically.");
-                return Ok(());
-            }
+            Ok(cookie) => match verify_cookie(&cookie).await {
+                Ok(_) => {
+                    eprintln!("found YouTube Music login.");
+                    write_cookie_file(cookie_file, &cookie)?;
+                    println!("Signed in using {} (saved to {}).", p.label, cookie_file.display());
+                    println!("If pova is already running, it picks this up automatically.");
+                    return Ok(());
+                }
+                Err(CookieCheckError::NotSignedIn) => {
+                    eprintln!("not signed in yet.");
+                    if readable_candidate.is_none() {
+                        readable_candidate = Some((p.spec.clone(), p.label.clone()));
+                    }
+                    tried.push(p.label.clone());
+                }
+                Err(CookieCheckError::Other(msg)) => {
+                    eprintln!("skipped ({msg})");
+                    tried.push(p.label.clone());
+                }
+            },
             Err(ExtractError::NotSignedIn { .. }) => {
                 eprintln!("not signed in yet.");
                 if readable_candidate.is_none() {
@@ -1096,22 +1110,32 @@ pub async fn login_cli(cookie_file: &Path, browser: Option<&str>) -> anyhow::Res
 }
 
 async fn wait_for_browser_login_cli(cookie_file: &Path, spec: &str, label: &str) -> anyhow::Result<()> {
+    use crate::ytm::{CookieCheckError, verify_cookie};
+
     if open_in_browser(spec) {
         eprintln!("Opened {YTM_SIGN_IN_URL} in {label}.");
     } else {
         eprintln!("Open {YTM_SIGN_IN_URL} in {label}.");
     }
     eprintln!("Sign in with your Google account there — waiting for login… (Ctrl+C to cancel)");
-    let deadline = std::time::Instant::now() + Duration::from_secs(180);
+    let deadline = std::time::Instant::now() + crate::app::AUTH_POLL_TIMEOUT;
     while std::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(crate::app::AUTH_POLL_INTERVAL).await;
         match extract_from_browser(spec).await {
-            Ok(cookie) => {
-                write_cookie_file(cookie_file, &cookie)?;
-                println!("Signed in using {label} (saved to {}).", cookie_file.display());
-                println!("If pova is already running, it picks this up automatically.");
-                return Ok(());
-            }
+            Ok(cookie) => match verify_cookie(&cookie).await {
+                Ok(_) => {
+                    write_cookie_file(cookie_file, &cookie)?;
+                    println!("Signed in using {label} (saved to {}).", cookie_file.display());
+                    println!("If pova is already running, it picks this up automatically.");
+                    return Ok(());
+                }
+                Err(CookieCheckError::NotSignedIn) => continue,
+                Err(CookieCheckError::Other(msg)) => {
+                    anyhow::bail!(
+                        "Couldn't sign in with {label} ({msg}). Check your internet connection and try again."
+                    );
+                }
+            },
             Err(ExtractError::NotSignedIn { .. }) => continue,
             Err(ExtractError::Other(msg)) => anyhow::bail!("{msg}"),
         }
@@ -1246,6 +1270,14 @@ Path=/tmp/ff-work
                 ("work".into(), "/tmp/ff-work".into(), false, false),
             ]
         );
+    }
+
+    #[test]
+    fn explains_old_ytdlp_without_url_fallback() {
+        let stderr = "Usage: yt-dlp [OPTIONS] URL [URL...]\n\nyt-dlp: error: You must provide at least one URL.\n";
+        let msg = explain_extract_error("chrome", stderr);
+        assert!(msg.contains("too old"), "{msg}");
+        assert!(msg.contains("pipx upgrade yt-dlp"), "{msg}");
     }
 
     #[test]

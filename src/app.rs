@@ -165,6 +165,11 @@ impl SearchState {
     }
 }
 
+/// How often pova re-checks the browser while waiting for sign-in to complete.
+pub const AUTH_POLL_INTERVAL: Duration = Duration::from_secs(10);
+/// Stop polling automatically after 3 minutes ("Check now" still works anytime).
+pub const AUTH_POLL_TIMEOUT: Duration = Duration::from_secs(180);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AuthInput {
     /// Custom `yt-dlp --cookies-from-browser` spec, e.g. `chrome:Profile 2`.
@@ -185,6 +190,7 @@ pub struct AuthWaiting {
 
 pub struct AuthUi {
     pub profiles: Vec<crate::auth::BrowserProfile>,
+    pub profiles_loaded: bool,
     pub selected: usize,
     pub input: Option<AuthInput>,
     /// Status text shown alongside the spinner while checking a profile or saving a cookie.
@@ -196,11 +202,24 @@ pub struct AuthUi {
 impl AuthUi {
     pub fn new() -> Self {
         Self {
-            profiles: crate::auth::detect_profiles(),
+            profiles: Vec::new(),
+            profiles_loaded: false,
             selected: 0,
             input: None,
             busy: None,
             waiting: None,
+        }
+    }
+
+    /// Detect installed browser profiles on demand (first time the sign-in
+    /// screen is shown), keeping startup free of browser-directory I/O for
+    /// users who are already signed in.
+    pub fn ensure_profiles(&mut self) {
+        if !self.profiles_loaded {
+            self.profiles_loaded = true;
+            if self.profiles.is_empty() {
+                self.profiles = crate::auth::detect_profiles();
+            }
         }
     }
 }
@@ -752,7 +771,12 @@ impl App {
             || self.player.buffering
             || self.load_started.is_some()
             || self.library.auth.busy.is_some()
-            || self.library.auth.waiting.is_some()
+            || self
+                .library
+                .auth
+                .waiting
+                .as_ref()
+                .is_some_and(|w| w.checking || w.started.elapsed() <= AUTH_POLL_TIMEOUT)
             || matches!(self.lyrics, LyricsState::Loading { .. })
             || self.search.stack.iter().chain(&self.library.stack).any(|l| l.loading)
     }
@@ -762,7 +786,7 @@ impl App {
         self.update_dwell();
         if let Some(w) = self.library.auth.waiting.as_mut()
             && !w.checking
-            && w.started.elapsed() <= Duration::from_secs(300)
+            && w.started.elapsed() <= AUTH_POLL_TIMEOUT
             && Instant::now() >= w.next_poll
         {
             w.checking = true;
@@ -1325,14 +1349,14 @@ impl App {
                     label,
                     browser_opened,
                     started: Instant::now(),
-                    next_poll: Instant::now() + Duration::from_secs(4),
+                    next_poll: Instant::now() + AUTH_POLL_INTERVAL,
                     checking: false,
                 });
             }
             YtmEvent::AuthPollPending => {
                 if let Some(w) = self.library.auth.waiting.as_mut() {
                     w.checking = false;
-                    w.next_poll = Instant::now() + Duration::from_secs(4);
+                    w.next_poll = Instant::now() + AUTH_POLL_INTERVAL;
                 }
             }
             YtmEvent::Loaded { token, title, items } => {
@@ -1951,6 +1975,7 @@ impl App {
         if self.logged_in || self.library.auth.busy.is_some() || self.library.auth.waiting.is_some() {
             return;
         }
+        self.library.auth.ensure_profiles();
         let Some(p) = self.library.auth.profiles.get(idx).cloned() else {
             return;
         };
@@ -1980,6 +2005,7 @@ impl App {
         let spec = if let Some(w) = self.library.auth.waiting.as_ref() {
             Some(w.spec.clone())
         } else {
+            self.library.auth.ensure_profiles();
             self.library
                 .auth
                 .profiles
@@ -2150,8 +2176,12 @@ impl App {
                 }
             }
             Tab::Library => {
-                if self.logged_in && self.library.stack.is_empty() {
-                    self.switch_library(self.library.section);
+                if self.logged_in {
+                    if self.library.stack.is_empty() {
+                        self.switch_library(self.library.section);
+                    }
+                } else {
+                    self.library.auth.ensure_profiles();
                 }
             }
             Tab::Queue if self.queue_state.selected().is_none() => {
@@ -2186,6 +2216,7 @@ impl App {
                 && self.library.auth.waiting.is_none()
                 && self.library.auth.input.is_none()
             {
+                self.library.auth.ensure_profiles();
                 let len = self.library.auth.profiles.len();
                 if len > 0 {
                     let cur = self.library.auth.selected.min(len - 1) as isize;
@@ -4049,6 +4080,10 @@ mod playlist_tests {
     #[test]
     fn library_sign_in_shows_link_and_profiles_and_loads_on_auth() {
         let (mut app, mut rx) = app();
+        // Browser profiles are detected lazily, not at App::new().
+        assert!(!app.library.auth.profiles_loaded);
+        assert!(app.library.auth.profiles.is_empty());
+
         app.library.auth.profiles = vec![
             crate::auth::BrowserProfile {
                 spec: "brave:Default".into(),
@@ -4061,6 +4096,7 @@ mod playlist_tests {
                 default: false,
             },
         ];
+        app.library.auth.profiles_loaded = true;
         app.library.auth.selected = 0;
 
         // Opening Library while signed out shows the link + detected profiles immediately.
@@ -4153,6 +4189,7 @@ mod playlist_tests {
             label: "Brave — Music".into(),
             default: true,
         }];
+        app.library.auth.profiles_loaded = true;
         app.tab = Tab::Library;
 
         // Selecting a profile that isn't signed in yet opens the link & waits for that profile.
@@ -4164,7 +4201,8 @@ mod playlist_tests {
             browser_opened: true,
         });
         assert!(app.library.auth.busy.is_none());
-        assert!(app.library.auth.waiting.is_some());
+        let w = app.library.auth.waiting.as_ref().expect("waiting state");
+        assert!(w.next_poll >= w.started + Duration::from_secs(9));
         assert!(app.animating());
         let shown = screen(&mut app);
         assert!(shown.contains("https://music.youtube.com"), "{shown}");
@@ -4182,6 +4220,15 @@ mod playlist_tests {
         app.on_ytm(YtmEvent::AuthPollPending);
         assert!(app.library.auth.waiting.is_some());
         assert!(app.flash.is_none(), "pending poll must not flash an error");
+
+        // After 3 minutes, automatic polling stops, while "Check now" still works.
+        if let Some(w) = app.library.auth.waiting.as_mut() {
+            w.started = Instant::now() - AUTH_POLL_TIMEOUT - Duration::from_secs(1);
+            w.next_poll = Instant::now() - Duration::from_secs(1);
+        }
+        assert!(!app.animating());
+        app.tick();
+        assert!(reqs(&mut rx).is_empty(), "must not auto-poll past 3 minutes");
 
         // Pressing 'o' reopens the link; Esc cancels waiting cleanly.
         key(&mut app, KeyCode::Char('o'));
