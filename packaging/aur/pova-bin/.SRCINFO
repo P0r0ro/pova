@@ -21,7 +21,7 @@ pkgbase = pova-bin
 	source = pova-v1.2.4-x86_64-linux.tar.gz::https://github.com/P0r0ro/pova/releases/download/v1.2.4/pova-v1.2.4-x86_64-linux.tar.gz
 	source = pova-1.2.4.desktop::https://raw.githubusercontent.com/P0r0ro/pova/v1.2.4/packaging/appimage/pova.desktop
 	source = pova-1.2.4.png::https://raw.githubusercontent.com/P0r0ro/pova/v1.2.4/packaging/appimage/pova.png
-	sha256sums = edcc84f41a956f2a350bec4c0ad9d66017bdfdf966d608ad6b99b5cfdead4caf
+	sha256sums = 225a1220fe247b2781c1a7eb383bb346d38835750d627c7df8c8d87ab30558a7
 	sha256sums = 77e8a633ec7a257a0431f1ff2b9f649871616ba0b2cf336fafa8a340bbb569de
 	sha256sums = 4ce91bc0440e985c495f5c6bd57202cb0070ac2563d6ec84b7bf6aea89234d14
 
