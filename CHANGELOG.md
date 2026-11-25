@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.3 — sign in from inside pova
 
 - **One-click browser profile sign-in and `pova login` / `pova logout`.** The
   Library tab now shows the `https://music.youtube.com` link right away along
