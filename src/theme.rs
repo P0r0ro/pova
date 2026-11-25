@@ -2,8 +2,11 @@
 //!
 //! pova reads btop's `.theme` files directly (`theme[key]="#rrggbb"`), so every
 //! btop theme works unchanged. btop keys are mapped onto pova's UI roles; a few
-//! optional pova-only keys (`viz_start`, `viz_mid`, `viz_end`, `progress_*`)
-//! can override the mapping.
+//! optional pova-only keys (`viz_start`, `viz_mid`, `viz_end`, `progress_*`,
+//! `logo_start`, `logo_mid`, `logo_end`, `logo_text`, `error`) can override
+//! the mapping or theme the parts btop has no key for.
+//!
+//! Built in: btop's Default and the four Catppuccin flavours.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,9 +33,42 @@ pub struct Theme {
     pub box_player: Color,
     pub box_controls: Color,
     pub accent: Color,
+    /// Error box and "Yes, delete" button.
+    pub error: Color,
+    /// Letters of the logo in the Esc menu.
+    pub logo_text: Color,
     viz: [Rgb; 3],
     progress: [Rgb; 3],
+    /// Logo / Esc menu gradient (pova's violet -> pink by default).
+    logo: [Rgb; 3],
 }
+
+/// Themes compiled into pova: (name, btop theme file). A theme file of the
+/// same name in a themes folder takes precedence.
+const BUILTIN: [(&str, &str); 5] = [
+    ("Default", DEFAULT_THEME),
+    (
+        "catppuccin_frappe",
+        include_str!("../assets/themes/catppuccin_frappe.theme"),
+    ),
+    (
+        "catppuccin_latte",
+        include_str!("../assets/themes/catppuccin_latte.theme"),
+    ),
+    (
+        "catppuccin_macchiato",
+        include_str!("../assets/themes/catppuccin_macchiato.theme"),
+    ),
+    (
+        "catppuccin_mocha",
+        include_str!("../assets/themes/catppuccin_mocha.theme"),
+    ),
+];
+
+/// pova's own colours for the parts btop themes don't cover.
+const LOGO: [(u8, u8, u8); 3] = [(0x6b, 0x1f, 0xfc), (0xa8, 0x1e, 0xf1), (0xff, 0x00, 0x7f)];
+const LOGO_TEXT: (u8, u8, u8) = (0xf4, 0xf2, 0xff);
+const ERROR: (u8, u8, u8) = (0xe0, 0x50, 0x50);
 
 /// btop's built-in "Default" theme.
 const DEFAULT_THEME: &str = r##"
@@ -178,8 +214,17 @@ impl Theme {
         } else {
             Color::Reset
         };
+        let own = |k: &str, default: (u8, u8, u8)| user.get(k).copied().flatten().unwrap_or(default);
+        let logo = [
+            Some(own("logo_start", LOGO[0])),
+            Some(own("logo_mid", LOGO[1])),
+            Some(own("logo_end", LOGO[2])),
+        ];
         Theme {
             name: name.to_string(),
+            error: to_color(Some(own("error", ERROR))),
+            logo_text: to_color(Some(own("logo_text", LOGO_TEXT))),
+            logo,
             main_bg,
             main_fg: to_color(get("main_fg")),
             title: to_color(get("title")),
@@ -203,6 +248,19 @@ impl Theme {
         Theme::from_map("Default", &HashMap::new(), use_background)
     }
 
+    /// A theme compiled into pova, by name (case-insensitive).
+    pub fn builtin(name: &str, use_background: bool) -> Option<Theme> {
+        BUILTIN
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(n, text)| Theme::from_map(n, &parse_theme_file(text), use_background))
+    }
+
+    /// Logo / Esc menu gradient colour at `t` (0 = start, 1 = end).
+    pub fn logo_color(&self, t: f32) -> Color {
+        gradient(&self.logo, self.hi_fg, t)
+    }
+
     pub fn load(path: &Path, use_background: bool) -> anyhow::Result<Theme> {
         let contents = std::fs::read_to_string(path)?;
         let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("theme");
@@ -217,6 +275,17 @@ impl Theme {
     /// Progress-bar gradient colour at position `t` (0 = left, 1 = right).
     pub fn progress_color(&self, t: f32) -> Color {
         gradient(&self.progress, self.hi_fg, t)
+    }
+}
+
+/// Black or white, whichever reads better on `bg` (for text on a coloured
+/// highlight, so light themes like Catppuccin Latte stay readable).
+pub fn text_on(bg: Color) -> Color {
+    match bg {
+        Color::Rgb(r, g, b) if 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32 > 150.0 => {
+            Color::Rgb(0x11, 0x11, 0x1b)
+        }
+        _ => Color::Rgb(0xff, 0xff, 0xff),
     }
 }
 
@@ -251,6 +320,11 @@ pub fn list_themes(config_dir: &Path) -> Vec<(String, Option<PathBuf>)> {
             }
         }
     }
+    for (name, _) in BUILTIN.iter().skip(1) {
+        if seen.insert(name.to_string()) {
+            found.push((name.to_string(), None));
+        }
+    }
     found.sort_by_key(|(n, _)| n.to_lowercase());
     found.insert(0, ("Default".to_string(), None));
     found
@@ -269,6 +343,9 @@ pub fn load_named(config_dir: &Path, name: &str, use_background: bool) -> Theme 
                 }
             }
         }
+        if let Some(t) = Theme::builtin(name, use_background) {
+            return t;
+        }
         tracing::warn!("theme {name:?} not found, using Default");
     }
     Theme::builtin_default(use_background)
@@ -277,6 +354,57 @@ pub fn load_named(config_dir: &Path, name: &str, use_background: bool) -> Theme 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catppuccin_flavours_are_built_in_and_theme_every_part() {
+        let dir = crate::app::test_paths().config_dir;
+        // Listed even with no theme files at all (a user's own copy may be
+        // listed instead on machines that have Catppuccin for btop).
+        let names: Vec<String> = list_themes(&dir).into_iter().map(|(n, _)| n).collect();
+        for flavour in ["frappe", "latte", "macchiato", "mocha"] {
+            let name = format!("catppuccin_{flavour}");
+            assert!(names.contains(&name), "{name} missing from {names:?}");
+        }
+        assert_eq!(names[0], "Default", "Default stays first");
+        let mocha = Theme::builtin("catppuccin_mocha", true).unwrap();
+        assert_eq!(mocha.main_bg, Color::Rgb(0x1e, 0x1e, 0x2e)); // Base
+        assert_eq!(mocha.error, Color::Rgb(0xf3, 0x8b, 0xa8)); // Red
+        assert_eq!(mocha.logo_color(0.0), Color::Rgb(0xcb, 0xa6, 0xf7)); // Mauve
+        assert_eq!(mocha.logo_text, Color::Rgb(0xcd, 0xd6, 0xf4)); // Text
+        let latte = Theme::builtin("Catppuccin_Latte", true).unwrap();
+        assert_eq!(
+            latte.logo_text,
+            Color::Rgb(0x4c, 0x4f, 0x69),
+            "dark letters on the light flavour"
+        );
+    }
+
+    #[test]
+    fn a_theme_file_overrides_the_built_in_copy() {
+        let dir = crate::app::test_paths().config_dir;
+        std::fs::create_dir_all(dir.join("themes")).unwrap();
+        std::fs::write(
+            dir.join("themes/catppuccin_mocha.theme"),
+            "theme[main_bg]=\"#123456\"\n",
+        )
+        .unwrap();
+        let listed = list_themes(&dir);
+        let mocha = listed.iter().find(|(n, _)| n == "catppuccin_mocha").unwrap();
+        assert!(mocha.1.is_some(), "the user's file is listed, not the built-in");
+        assert_eq!(
+            load_named(&dir, "catppuccin_mocha", true).main_bg,
+            Color::Rgb(0x12, 0x34, 0x56)
+        );
+    }
+
+    #[test]
+    fn default_keeps_povas_own_colours_and_text_stays_readable() {
+        let d = Theme::builtin_default(true);
+        assert_eq!(d.error, Color::Rgb(0xe0, 0x50, 0x50));
+        assert_eq!(d.logo_color(1.0), Color::Rgb(0xff, 0x00, 0x7f));
+        assert_eq!(text_on(Color::Rgb(0xf5, 0xc2, 0xe7)), Color::Rgb(0x11, 0x11, 0x1b));
+        assert_eq!(text_on(Color::Rgb(0x6b, 0x1f, 0xfc)), Color::Rgb(0xff, 0xff, 0xff));
+    }
 
     #[test]
     fn parses_color_forms() {

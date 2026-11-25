@@ -2428,7 +2428,7 @@ impl App {
             let bg = self.cfg.theme_background;
             self.theme = match path {
                 Some(p) => Theme::load(p, bg).unwrap_or_else(|_| Theme::builtin_default(bg)),
-                None => Theme::builtin_default(bg),
+                None => Theme::builtin(name, bg).unwrap_or_else(|| Theme::builtin_default(bg)),
             };
             if name != &self.theme.name {
                 self.theme.name = name.clone();

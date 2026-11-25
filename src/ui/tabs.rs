@@ -474,7 +474,7 @@ fn browse(f: &mut Frame, app: &mut App, area: Rect, library: bool) {
         let width = body.width.saturating_sub(4).clamp(20, 90) as usize;
         let lines = crate::ui::wrap_text(err, width)
             .into_iter()
-            .map(|l| Line::from(Span::styled(l, Style::new().fg(crate::ui::ERROR_RED))))
+            .map(|l| Line::from(Span::styled(l, Style::new().fg(t.error))))
             .collect();
         centered_msg(f, body, &t, lines);
         return;

@@ -20,6 +20,7 @@ include = [
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "assets/mascot-sad-cat-tui.png",
+    "assets/themes/*.theme",
     "scripts/import-cookie.sh",
     "packaging/appimage/**",
 ]

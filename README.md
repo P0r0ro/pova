@@ -218,7 +218,7 @@ This needs you to sign in once (next section).
 ### And also
 
 - **Four visualizer modes** (`v`): stereo bars, mirror, mono and a waveform.
-- **Every btop theme** (`t`): pova reads btop's `.theme` files as they are, with a live preview.
+- **Every btop theme** (`t`): pova reads btop's `.theme` files as they are, with a live preview. The four Catppuccin flavours are built in.
 - **The Esc menu**: btop-style, with the pova logo drawn in block characters, for themes, the visualizer, autoplay and album art.
 - **Your library** (`b`): your playlists, liked songs and history once you're signed in.
 - **Your playlists** (`p`): add the song you're on to one of your playlists or a new one, take songs out with `d`, and delete a playlist with `D` (it asks first).
