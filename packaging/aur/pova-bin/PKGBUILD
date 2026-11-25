@@ -24,7 +24,7 @@ source=(
   "pova-${pkgver}.desktop::https://raw.githubusercontent.com/P0r0ro/pova/v${pkgver}/packaging/appimage/pova.desktop"
   "pova-${pkgver}.png::https://raw.githubusercontent.com/P0r0ro/pova/v${pkgver}/packaging/appimage/pova.png"
 )
-sha256sums=('64dc9f5e225d80ba32ab7bc6b228f04aa5cc41ea39a76711230b56a1570e8a2e'
+sha256sums=('edcc84f41a956f2a350bec4c0ad9d66017bdfdf966d608ad6b99b5cfdead4caf'
             '77e8a633ec7a257a0431f1ff2b9f649871616ba0b2cf336fafa8a340bbb569de'
             '4ce91bc0440e985c495f5c6bd57202cb0070ac2563d6ec84b7bf6aea89234d14')
 
