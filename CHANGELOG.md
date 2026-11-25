@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Catppuccin, built in.** Latte, Frappé, Macchiato and Mocha are in the
+  theme picker (`t`) with nothing to install, from catppuccin/btop.
+- **Themes can now colour every part of pova**, including the Esc menu logo
+  and highlight and the error box, with the new `logo_*` and `error` keys.
+  Text on coloured highlights picks black or white for contrast, so light
+  themes stay readable.
+
 ## 1.2.1 — apt repository, Liked songs fix
 
 - **apt repository** for Debian, Ubuntu, Linux Mint and Pop!_OS: add it once

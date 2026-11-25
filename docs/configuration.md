@@ -46,6 +46,14 @@ menu. What you pick there wins over `config.toml`.
 
 **Themes** are looked up in `~/.config/pova/themes/`, `~/.config/btop/themes/`
 and `/usr/share/btop/themes/`. Run `pova --list-themes` to see what you have.
+
+Built in, with nothing to install: btop's Default and the four
+[Catppuccin](https://catppuccin.com) flavours, `catppuccin_latte`,
+`catppuccin_frappe`, `catppuccin_macchiato` and `catppuccin_mocha` (from
+[catppuccin/btop](https://github.com/catppuccin/btop)). A theme file with the
+same name in one of the folders above replaces the built-in copy.
+
+<p align="center"><img src="../assets/screenshots/catppuccin-flavours.jpg" alt="pova in Catppuccin Latte, Frappé, Macchiato and Mocha" width="800"></p>
 To make your own, copy a btop theme and change it. These are the keys pova
 reads:
 
@@ -56,8 +64,19 @@ reads:
 | `cpu_start`, `cpu_mid`, `cpu_end` | the visualizer's colour gradient |
 | `download_start/mid/end` | the progress and volume bars |
 
-pova also understands a few keys btop doesn't have: `viz_start/mid/end` and
-`progress_start/mid/end`.
+pova also understands a few keys btop doesn't have, and ignores the rest:
+
+| pova key | used for | default |
+|---|---|---|
+| `viz_start/mid/end` | the visualizer gradient, instead of `cpu_*` | `cpu_*` |
+| `progress_start/mid/end` | the progress and volume bars, instead of `download_*` | `download_*` |
+| `logo_start/mid/end` | the logo and highlight in the Esc menu | pova's violet to pink |
+| `logo_text` | the logo's letters | near white |
+| `error` | the error box and "Yes, delete" button | red |
+
+btop ignores these keys, so one theme file works in both. Text on the Esc
+menu highlight and the delete button turns black or white by itself,
+whichever reads better.
 
 The full list of action names for `[keys]` is in [keys.md](keys.md).
 

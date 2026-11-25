@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table};
 
@@ -132,8 +132,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             let button = |label: &'static str, on: bool, danger: bool| {
                 let style = if on && danger {
                     Style::new()
-                        .bg(crate::ui::ERROR_RED)
-                        .fg(Color::Rgb(0xff, 0xff, 0xff))
+                        .bg(t.error)
+                        .fg(crate::theme::text_on(t.error))
                         .add_modifier(Modifier::BOLD)
                 } else if on {
                     sel
@@ -241,7 +241,7 @@ fn draw_menu(f: &mut Frame, app: &mut App, area: Rect, selected: usize) {
     let scale = [2usize, 1]
         .into_iter()
         .find(|&s| banner::width(s) + 4 <= area.width && (s as u16 * 4 + 2) + items_h + 6 <= area.height);
-    let logo = scale.map(banner::lines).unwrap_or_default();
+    let logo = scale.map(|s| banner::lines(s, &t)).unwrap_or_default();
     let logo_w = scale.map(banner::width).unwrap_or(0);
     let panel_w = logo_w.max(items_w) + 4;
     let panel_h = logo.len() as u16 + items_h + 5;
@@ -262,7 +262,7 @@ fn draw_menu(f: &mut Frame, app: &mut App, area: Rect, selected: usize) {
         }
     }
     y += 1;
-    let accent = banner::gradient(0.5);
+    let accent = t.logo_color(0.5);
     for (i, label) in items.iter().enumerate() {
         if y >= bottom {
             break;
@@ -271,7 +271,7 @@ fn draw_menu(f: &mut Frame, app: &mut App, area: Rect, selected: usize) {
         let style = if i == selected {
             Style::new()
                 .bg(accent)
-                .fg(Color::Rgb(0xff, 0xff, 0xff))
+                .fg(crate::theme::text_on(accent))
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::new().fg(t.main_fg)
