@@ -32,6 +32,15 @@ It never prints the cookie values. To use a specific browser profile, write
 Within a couple of seconds the bottom of the player box says **● signed in**.
 pova notices the new cookie by itself, even while it's running.
 
+### Brand Accounts and multiple Google accounts
+
+If your playlists and liked songs live on a YouTube Brand Account (channel) or
+a secondary Google account in the same browser session, press `u` in the
+**Library** tab (`b`) or choose **Switch account** in the `esc` menu. pova lists
+the accounts and Brand channels available in your session, shows the active one
+in the player border (`● <name>`), and remembers your choice between runs.
+Nothing extra is queried on startup unless you open the switcher.
+
 **Treat `cookie.txt` like a password.** It grants access to your Google
 account. It stays on your machine and pova only sends it to YouTube Music. Google
 replaces these cookies now and then. When that happens pova switches to

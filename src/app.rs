@@ -12,7 +12,7 @@ use ratatui_image::thread::ThreadProtocol;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::art::{ArtEvent, ArtReq};
-use crate::config::{Config, Paths, Session, State, VizMode};
+use crate::config::{AccountChoice, Config, Paths, Session, State, VizMode};
 use crate::keymap::{Action, Keymap};
 use crate::lyrics::{Lyrics, LyricsEvent, LyricsReq};
 use crate::model::{Item, PlaylistRef, Track, video_id_from_url};
@@ -21,7 +21,7 @@ use crate::player::queue::{Queue, Repeat};
 use crate::resolve::{ResolveReq, Resolved};
 use crate::theme::{self, Theme};
 use crate::viz::Frame;
-use crate::ytm::{SearchFilter, Suggestion, View, YtmEvent, YtmReq};
+use crate::ytm::{AccountInfo, SearchFilter, Suggestion, View, YtmEvent, YtmReq};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
@@ -220,6 +220,12 @@ pub enum Overlay {
         /// Some while typing a new playlist's name.
         naming: Option<String>,
     },
+    /// Pick which YouTube account or Brand channel to use.
+    Accounts {
+        /// None while loading.
+        items: Option<Vec<AccountInfo>>,
+        state: TableState,
+    },
 }
 
 /// What a confirmed `Overlay::Confirm` does.
@@ -237,18 +243,20 @@ pub enum MenuItem {
     AlbumArt,
     Loudness,
     Notifications,
+    SwitchAccount,
     Help,
     Quit,
 }
 
 impl MenuItem {
-    pub const ALL: [MenuItem; 8] = [
+    pub const ALL: [MenuItem; 9] = [
         MenuItem::Themes,
         MenuItem::VizMode,
         MenuItem::Autoplay,
         MenuItem::AlbumArt,
         MenuItem::Loudness,
         MenuItem::Notifications,
+        MenuItem::SwitchAccount,
         MenuItem::Help,
         MenuItem::Quit,
     ];
@@ -442,6 +450,8 @@ pub struct App {
     /// until then, so config.toml keeps deciding.
     picked_loudness: Option<bool>,
     picked_notifications: Option<bool>,
+    /// Explicitly chosen YouTube account / Brand channel (remembered in state.toml).
+    pub account: Option<AccountChoice>,
 }
 
 impl App {
@@ -522,6 +532,7 @@ impl App {
             skip_disliked: None,
             picked_loudness: state.normalize_loudness,
             picked_notifications: state.notifications,
+            account: state.account,
             cfg,
             paths,
         }
@@ -571,6 +582,10 @@ impl App {
             MenuItem::AlbumArt => format!("Album art      ‹ {} ›", on_off(self.cfg.album_art)),
             MenuItem::Loudness => format!("Even loudness  ‹ {} ›", on_off(self.cfg.normalize_loudness)),
             MenuItem::Notifications => format!("Notifications  ‹ {} ›", on_off(self.cfg.notifications)),
+            MenuItem::SwitchAccount => match self.account.as_ref().and_then(|a| a.name.as_deref()) {
+                Some(name) if self.logged_in => format!("Switch account ({name})"),
+                _ => "Switch account".into(),
+            },
             MenuItem::Help => "Help".into(),
             MenuItem::Quit => "Quit".into(),
         }
@@ -579,6 +594,7 @@ impl App {
     fn activate_menu(&mut self, item: MenuItem, forward: bool) {
         match item {
             MenuItem::Themes => self.open_themes(),
+            MenuItem::SwitchAccount => self.open_accounts(),
             MenuItem::Help => self.overlay = Some(Overlay::Help { scroll: 0 }),
             MenuItem::Quit => self.quit = true,
             MenuItem::Loudness => {
@@ -621,6 +637,21 @@ impl App {
                 self.save_state();
             }
         }
+    }
+
+    pub fn open_accounts(&mut self) {
+        if !self.logged_in {
+            self.flash(
+                "Sign in first (`pova-import-cookie chrome` or firefox) to switch accounts.",
+                true,
+            );
+            return;
+        }
+        self.overlay = Some(Overlay::Accounts {
+            items: None,
+            state: TableState::default(),
+        });
+        let _ = self.tx.ytm.send(YtmReq::ListAccounts);
     }
 
     /// Save the queue and position for `resume` (no-op when it's off).
@@ -679,6 +710,7 @@ impl App {
             album_art: Some(self.cfg.album_art),
             normalize_loudness: self.picked_loudness,
             notifications: self.picked_notifications,
+            account: self.account.clone(),
         }
         .save(&self.paths.state_file());
     }
@@ -1221,6 +1253,9 @@ impl App {
                         token,
                         view: View::LikedSongs,
                     });
+                } else if was {
+                    self.account = None;
+                    self.save_state();
                 }
                 if let Some(m) = message {
                     self.flash(m, true);
@@ -1353,6 +1388,39 @@ impl App {
                     }
                 }
                 self.flash(format!("Deleted the playlist {title}"), false);
+            }
+            YtmEvent::Accounts { items } => {
+                if let Some(Overlay::Accounts { items: slot, state }) = self.overlay.as_mut() {
+                    let active_idx = items.iter().position(|a| a.active).unwrap_or(0);
+                    *slot = Some(items);
+                    state.select(slot.as_ref().filter(|v| !v.is_empty()).map(|_| active_idx));
+                }
+            }
+            YtmEvent::AccountSwitched {
+                auth_user,
+                page_id,
+                name,
+            } => {
+                self.account = Some(AccountChoice {
+                    auth_user,
+                    page_id,
+                    name: Some(name.clone()),
+                });
+                self.save_state();
+                self.likes.clear();
+                self.likes_loaded = false;
+                let token = self.token();
+                self.pending.insert(token, Pending::LikedSet);
+                let _ = self.tx.ytm.send(YtmReq::Load {
+                    token,
+                    view: View::LikedSongs,
+                });
+                if self.tab == Tab::Library {
+                    self.switch_library(self.library.section);
+                } else {
+                    self.library.stack.clear();
+                }
+                self.flash(format!("Switched account: {name}"), false);
             }
             YtmEvent::Rated { video_id, liked } => {
                 self.likes.insert(video_id.clone(), liked);
@@ -1707,6 +1775,14 @@ impl App {
         }
         if self.overlay.is_some() {
             self.on_overlay_key(k);
+            return;
+        }
+        if self.tab == Tab::Library
+            && self.logged_in
+            && k.code == KeyCode::Char('u')
+            && !k.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            self.open_accounts();
             return;
         }
         if self.tab == Tab::Search && self.search.editing && self.on_edit_key(k) {
@@ -2567,6 +2643,29 @@ impl App {
                     _ => {}
                 }
             }
+            Overlay::Accounts { items, state } => {
+                let len = items.as_ref().map_or(0, Vec::len);
+                let cur = state.selected().unwrap_or(0).min(len.saturating_sub(1));
+                match (k.code, action) {
+                    (KeyCode::Esc, _) => self.overlay = None,
+                    (_, Some(Action::Down)) if len > 0 => state.select(Some((cur + 1) % len)),
+                    (_, Some(Action::Up)) if len > 0 => state.select(Some((cur + len - 1) % len)),
+                    (_, Some(Action::Top)) if len > 0 => state.select(Some(0)),
+                    (_, Some(Action::Bottom)) if len > 0 => state.select(Some(len - 1)),
+                    (KeyCode::Enter, _) => {
+                        if let Some(acct) = items.as_ref().and_then(|v| v.get(cur)).cloned() {
+                            self.overlay = None;
+                            let _ = self.tx.ytm.send(YtmReq::SwitchAccount {
+                                auth_user: acct.auth_user,
+                                page_id: acct.page_id,
+                                name: acct.name,
+                            });
+                        }
+                    }
+                    (_, Some(Action::Quit)) => self.quit = true,
+                    _ => {}
+                }
+            }
             Overlay::Menu { state } => {
                 let items = &MenuItem::ALL;
                 let len = items.len();
@@ -2640,6 +2739,14 @@ impl App {
                     let cur = state.selected().unwrap_or(0).min(len - 1);
                     let next = if down { (cur + 1) % len } else { (cur + len - 1) % len };
                     state.select(Some(next));
+                }
+                Overlay::Accounts { items, state } => {
+                    let len = items.as_ref().map_or(0, Vec::len);
+                    if len > 0 {
+                        let cur = state.selected().unwrap_or(0).min(len - 1);
+                        let next = if down { (cur + 1) % len } else { (cur + len - 1) % len };
+                        state.select(Some(next));
+                    }
                 }
                 Overlay::Confirm { .. } | Overlay::AddToPlaylist { .. } => {}
             }
@@ -3705,6 +3812,68 @@ mod playlist_tests {
                 .is_some_and(|f| f.error && f.text.contains("pova-import-cookie"))
         );
         assert!(reqs(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn account_switcher_lists_and_switches_explicitly() {
+        let (mut app, mut rx) = app();
+        app.logged_in = true;
+        app.tab = Tab::Library;
+
+        // Nothing is probed until the user explicitly asks to switch accounts.
+        assert!(reqs(&mut rx).is_empty());
+        key(&mut app, KeyCode::Char('u'));
+        assert!(matches!(app.overlay, Some(Overlay::Accounts { items: None, .. })));
+        let sent = reqs(&mut rx);
+        assert!(sent.iter().any(|r| matches!(r, YtmReq::ListAccounts)), "{sent:?}");
+
+        app.on_ytm(YtmEvent::Accounts {
+            items: vec![
+                AccountInfo {
+                    name: "Main Google".into(),
+                    subtitle: "main@example.com".into(),
+                    auth_user: "0".into(),
+                    page_id: None,
+                    active: true,
+                },
+                AccountInfo {
+                    name: "Music Brand".into(),
+                    subtitle: "@music · Brand Account".into(),
+                    auth_user: "0".into(),
+                    page_id: Some("101234567890123456789".into()),
+                    active: false,
+                },
+            ],
+        });
+        let shown = screen(&mut app);
+        assert!(shown.contains("Main Google"), "{shown}");
+        assert!(shown.contains("Music Brand"), "{shown}");
+
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Enter);
+        assert!(app.overlay.is_none());
+        let sent = reqs(&mut rx);
+        assert!(
+            sent.iter().any(|r| matches!(
+                r,
+                YtmReq::SwitchAccount { auth_user, page_id, name }
+                if auth_user == "0" && page_id.as_deref() == Some("101234567890123456789") && name == "Music Brand"
+            )),
+            "{sent:?}"
+        );
+
+        app.on_ytm(YtmEvent::AccountSwitched {
+            auth_user: "0".into(),
+            page_id: Some("101234567890123456789".into()),
+            name: "Music Brand".into(),
+        });
+        let shown = screen(&mut app);
+        assert!(shown.contains("● Music Brand"), "{shown}");
+        let saved = State::load(&app.paths.state_file());
+        assert_eq!(
+            saved.account.as_ref().and_then(|a| a.page_id.as_deref()),
+            Some("101234567890123456789")
+        );
     }
 
     #[test]

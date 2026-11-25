@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **YouTube Brand Accounts & explicit account switcher.** Signed-in requests
+  now use your browser's active YouTube Music identity (including Brand
+  Account delegation and session-bound auth headers) instead of always falling
+  back to an empty default account. Press `u` in the Library tab (or choose
+  **Switch account** in the Esc menu) to list your Google accounts and Brand
+  channels, pick which one to use, and see the active account in the player
+  border. Your choice is remembered between runs; nothing is probed unless you
+  open the switcher.
+
 ## 1.2.2 — Catppuccin themes
 
 - **Catppuccin, built in.** Latte, Frappé, Macchiato and Mocha are in the
