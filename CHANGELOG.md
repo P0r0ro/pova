@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.2 — Catppuccin themes
 
 - **Catppuccin, built in.** Latte, Frappé, Macchiato and Mocha are in the
   theme picker (`t`) with nothing to install, from catppuccin/btop.
