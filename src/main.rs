@@ -6,6 +6,7 @@ mod auth;
 mod config;
 mod control;
 mod keymap;
+mod lenient;
 mod lyrics;
 mod model;
 mod notify;

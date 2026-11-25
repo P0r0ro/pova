@@ -1,0 +1,69 @@
+name: apt repository
+
+# Publishes pova's signed apt repository on GitHub Pages
+# (https://p0r0ro.github.io/pova/apt). It holds the .deb files of the last
+# three releases: the same files release.yml built, tested and attached to
+# each release, so apt users get the same binary as every other channel.
+# Runs after every successful release build, or by hand.
+on:
+  workflow_run:
+    workflows: ["Release binaries"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: scripts
+
+      - name: Download the released .deb files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/apt-repo.sh fetch debs 3
+
+      - name: Build and sign the repository
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+          APT_SIGNING_PASSPHRASE: ${{ secrets.APT_SIGNING_PASSPHRASE }}
+        run: |
+          if [ -z "$APT_SIGNING_KEY" ]; then
+            echo "::error::the APT_SIGNING_KEY secret is missing; see docs/development.md"
+            exit 1
+          fi
+          scripts/apt-repo.sh build debs site/apt
+          # A landing page for the Pages root.
+          printf '<!doctype html><meta http-equiv="refresh" content="0; url=https://github.com/P0r0ro/pova">\n' > site/index.html
+
+      - name: Install pova from it on clean Debian and Ubuntu
+        run: |
+          scripts/apt-repo.sh test site/apt debian:stable
+          scripts/apt-repo.sh test site/apt ubuntu:24.04
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}apt/
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

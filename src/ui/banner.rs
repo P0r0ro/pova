@@ -7,11 +7,10 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
-/// Logo colours, sampled from assets/logo.png.
-const VIOLET: (u8, u8, u8) = (0x6b, 0x1f, 0xfc);
-const PURPLE: (u8, u8, u8) = (0xa8, 0x1e, 0xf1);
-const PINK: (u8, u8, u8) = (0xff, 0x00, 0x7f);
-const WHITE: Color = Color::Rgb(0xf4, 0xf2, 0xff);
+use crate::theme::Theme;
+
+// Colours come from the theme (`logo_*` keys); pova's own violet -> pink
+// gradient and near-white letters are the defaults.
 
 /// 5×7 lowercase glyphs (x-height 5 + 2 rows of descender).
 const GLYPHS: [(char, [&str; 7]); 4] = [
@@ -24,20 +23,6 @@ const GLYPHS: [(char, [&str; 7]); 4] = [
 /// Waveform bar heights (pixels), like the logo's five bars.
 const BARS: [usize; 5] = [3, 5, 7, 5, 3];
 const HEIGHT: usize = 8;
-
-/// Gradient across the logo: violet → purple → pink.
-pub fn gradient(t: f32) -> Color {
-    let t = t.clamp(0.0, 1.0);
-    let lerp = |a: (u8, u8, u8), b: (u8, u8, u8), t: f32| {
-        let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
-        Color::Rgb(f(a.0, b.0), f(a.1, b.1), f(a.2, b.2))
-    };
-    if t < 0.5 {
-        lerp(VIOLET, PURPLE, t * 2.0)
-    } else {
-        lerp(PURPLE, PINK, (t - 0.5) * 2.0)
-    }
-}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Ink {
@@ -84,11 +69,11 @@ fn bitmap() -> Vec<Vec<Ink>> {
     (0..HEIGHT).map(|y| cols.iter().map(|c| c[y]).collect()).collect()
 }
 
-fn ink_color(ink: Ink) -> Color {
+fn ink_color(theme: &Theme, ink: Ink) -> Color {
     match ink {
-        Ink::Wave(t) => gradient(t),
-        Ink::Divider => gradient(0.5),
-        Ink::Letter => WHITE,
+        Ink::Wave(t) => theme.logo_color(t),
+        Ink::Divider => theme.logo_color(0.5),
+        Ink::Letter => theme.logo_text,
         Ink::None => Color::Reset,
     }
 }
@@ -101,7 +86,7 @@ pub fn width(scale: usize) -> u16 {
 const PAD: usize = 2;
 
 /// Render the framed logo. `scale` 1 = compact (6 rows), 2 = large (10 rows).
-pub fn lines(scale: usize) -> Vec<Line<'static>> {
+pub fn lines(scale: usize, theme: &Theme) -> Vec<Line<'static>> {
     let scale = scale.max(1);
     let bm = bitmap();
     // Scale up in both directions.
@@ -114,7 +99,7 @@ pub fn lines(scale: usize) -> Vec<Line<'static>> {
         .collect();
     let inner_w = px[0].len() + 2 * PAD * scale;
     let total_w = inner_w + 2;
-    let border = |x: usize| Style::new().fg(gradient(x as f32 / (total_w - 1) as f32));
+    let border = |x: usize| Style::new().fg(theme.logo_color(x as f32 / (total_w - 1) as f32));
 
     let mut out = Vec::new();
     // Top border with chamfered corners, like the logo's frame.
@@ -135,7 +120,7 @@ pub fn lines(scale: usize) -> Vec<Line<'static>> {
                 (false, true) => ("▄", b),
                 (false, false) => (" ", Ink::None),
             };
-            let mut style = Style::new().fg(ink_color(ink));
+            let mut style = Style::new().fg(ink_color(theme, ink));
             if ink == Ink::Letter {
                 style = style.add_modifier(Modifier::BOLD);
             }
@@ -167,7 +152,7 @@ mod tests {
     #[test]
     fn banner_is_rectangular_and_sized() {
         for scale in [1, 2] {
-            let l = lines(scale);
+            let l = lines(scale, &Theme::builtin_default(true));
             assert_eq!(l.len(), HEIGHT * scale / 2 + 2);
             let w = width(scale) as usize;
             for row in text(&l) {
@@ -179,11 +164,12 @@ mod tests {
 
     #[test]
     fn banner_has_wave_divider_and_letters() {
-        let rows = text(&lines(1));
+        let rows = text(&lines(1, &Theme::builtin_default(true)));
         let body = rows[1..rows.len() - 1].join("\n");
         assert!(body.contains('█') && body.contains('▀') && body.contains('▄'));
-        // The waveform's first bar is violet and the last is pink.
-        assert_eq!(gradient(0.0), Color::Rgb(0x6b, 0x1f, 0xfc));
-        assert_eq!(gradient(1.0), Color::Rgb(0xff, 0x00, 0x7f));
+        // By default the waveform runs from pova's violet to its pink.
+        let t = Theme::builtin_default(true);
+        assert_eq!(t.logo_color(0.0), Color::Rgb(0x6b, 0x1f, 0xfc));
+        assert_eq!(t.logo_color(1.0), Color::Rgb(0xff, 0x00, 0x7f));
     }
 }

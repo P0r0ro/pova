@@ -12,6 +12,26 @@
   `Sign in` / `Sign out` in the Esc menu, clickable login status in the player
   border, and `pova login` / `pova logout` CLI commands without `python3`.
 
+## 1.2.2 — Catppuccin themes
+
+- **Catppuccin, built in.** Latte, Frappé, Macchiato and Mocha are in the
+  theme picker (`t`) with nothing to install, from catppuccin/btop.
+- **Themes can now colour every part of pova**, including the Esc menu logo
+  and highlight and the error box, with the new `logo_*` and `error` keys.
+  Text on coloured highlights picks black or white for contrast, so light
+  themes stay readable.
+
+## 1.2.1 — apt repository, Liked songs fix
+
+- **apt repository** for Debian, Ubuntu, Linux Mint and Pop!_OS: add it once
+  and pova updates with `sudo apt upgrade`. It serves the same signed `.deb`
+  as the release page. See the README for the four setup lines.
+- **Fixed: Liked songs or a playlist failing with "Couldn't load".** One
+  unusual entry (a video whose channel name has no channel link) made the
+  whole list fail, and long lists could stop early. pova now reads such pages
+  leniently, skipping only entries that can't be played, and retries a page
+  that arrives cut off on a slow connection.
+
 ## 1.2.0 — even loudness, dislike, notifications
 
 - **Even loudness between songs.** mpv's loudness filter evens out the

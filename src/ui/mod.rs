@@ -161,14 +161,13 @@ pub fn draw(f: &mut Frame, app: &mut App) -> usize {
     want_bars
 }
 
-pub const ERROR_RED: Color = Color::Rgb(0xe0, 0x50, 0x50);
-
 /// Error box near the bottom of the screen: the full message, wrapped, so
 /// nothing is cut off. Esc or a click closes it; it also fades on its own.
 fn draw_error(f: &mut Frame, app: &mut App) {
     let Some(flash) = app.flash.as_ref().filter(|f| f.error) else {
         return;
     };
+    let err = app.theme.error;
     let area = f.area();
     if area.width < 20 || area.height < 5 {
         return;
@@ -187,18 +186,18 @@ fn draw_error(f: &mut Frame, app: &mut App) {
     let block = Block::new()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(ERROR_RED))
+        .border_style(Style::new().fg(err))
         .style(Style::new().bg(t.main_bg).fg(t.main_fg))
         .title(Line::from(vec![
-            Span::styled("─┐", Style::new().fg(ERROR_RED)),
-            Span::styled("error", Style::new().fg(ERROR_RED).add_modifier(Modifier::BOLD)),
-            Span::styled("┌", Style::new().fg(ERROR_RED)),
+            Span::styled("─┐", Style::new().fg(err)),
+            Span::styled("error", Style::new().fg(err).add_modifier(Modifier::BOLD)),
+            Span::styled("┌", Style::new().fg(err)),
         ]))
         .title_bottom(
             Line::from(vec![
-                Span::styled("┐", Style::new().fg(ERROR_RED)),
+                Span::styled("┐", Style::new().fg(err)),
                 Span::styled("esc closes", Style::new().fg(t.inactive_fg)),
-                Span::styled("┌─", Style::new().fg(ERROR_RED)),
+                Span::styled("┌─", Style::new().fg(err)),
             ])
             .alignment(Alignment::Right),
         );

@@ -1,6 +1,6 @@
 [package]
 name = "pova"
-version = "1.2.0"
+version = "1.2.2"
 edition = "2024"
 # Oldest Rust that builds pova (checked in CI by the msrv job).
 rust-version = "1.90"
@@ -20,6 +20,7 @@ include = [
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",
     "assets/mascot-sad-cat-tui.png",
+    "assets/themes/*.theme",
     "scripts/import-cookie.sh",
     "packaging/appimage/**",
 ]

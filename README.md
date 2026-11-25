@@ -11,6 +11,16 @@
   <a href="https://github.com/ratatui/awesome-ratatui#music-and-audio"><img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Ratatui"></a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/P0r0ro/pova/releases/latest"><img src="https://img.shields.io/github/v/release/P0r0ro/pova" alt="Latest release"></a>
+  <a href="https://crates.io/crates/pova"><img src="https://img.shields.io/crates/v/pova" alt="crates.io version"></a>
+  <a href="https://crates.io/crates/pova"><img src="https://img.shields.io/crates/d/pova" alt="crates.io downloads"></a>
+  <a href="https://copr.fedorainfracloud.org/coprs/p0r0ro/pova/"><img src="https://copr.fedorainfracloud.org/coprs/p0r0ro/pova/package/pova/status_image/last_build.png" alt="Fedora COPR build"></a>
+  <a href="https://github.com/P0r0ro/pova/actions/workflows/ci.yml"><img src="https://github.com/P0r0ro/pova/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/P0r0ro/pova" alt="MIT license"></a>
+  <a href="https://ratatui.rs/"><img src="https://ratatui.rs/built-with-ratatui/badge.svg" alt="Built With Ratatui"></a>
+</p>
+
 ---
 
 ## So what is this
@@ -43,23 +53,18 @@ kitty shows real album art (other terminals get a blocky version).
 | Method | Best for | Installs mpv, yt-dlp and the PipeWire tools for you |
 |---|---|---|
 | [Fedora COPR](#fedora-copr) | Fedora: one command, updates with your system | yes |
+| [apt repository](#debian-and-ubuntu-apt) | Debian, Ubuntu, Linux Mint, Pop!_OS: updates with your system | yes |
 | [`.rpm` package](#fedora-rpm) | Fedora and other dnf-based distros, without adding a repository | yes |
-| [`.deb` package](#debian-and-ubuntu-deb) | Debian, Ubuntu, Linux Mint, Pop!_OS | yes |
+| [`.deb` package](#debian-and-ubuntu-deb) | apt-based distros, without adding a repository | yes |
 | [AppImage](#appimage) | any distro, nothing to install | no |
 | [Prebuilt binary](#prebuilt-binary) | any distro, a single file in your `PATH` | no |
 | [crates.io](#from-cratesio-or-source) | Rust users, other CPU architectures | no |
 
 Every file is on the [latest release](https://github.com/P0r0ro/pova/releases/latest)
-page, with a `.sha256` checksum next to it. The commands below use version 1.2.0.
+page, with a `.sha256` checksum next to it. The commands below use version 1.2.2.
 
-**Coming soon:** more package repositories, so updates arrive through your
-normal system updates. The AUR package is built and tested and waits on an
-account; the Ubuntu PPA comes after it.
-
-| Where | Command |
-|---|---|
-| Arch (AUR) | `yay -S pova-bin` |
-| Ubuntu (PPA) | `sudo add-apt-repository ppa:p0r0ro/pova && sudo apt install pova` |
+**Coming soon:** the Arch AUR package (`yay -S pova-bin`). It's built and
+tested, and waits on an account.
 
 ### Fedora (COPR)
 
@@ -74,13 +79,30 @@ sudo dnf install pova
 
 Built for Fedora 43, 44, 45 and rawhide.
 
+### Debian and Ubuntu (apt)
+
+Add pova's apt repository once, and from then on pova updates with
+`sudo apt upgrade` like everything else. `apt` pulls in mpv, yt-dlp and
+pipewire-bin, and pova shows up in your app menu. Works on Debian, Ubuntu,
+Linux Mint, Pop!_OS and other apt-based distros.
+
+```sh
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://p0r0ro.github.io/pova/apt/pova.gpg | sudo tee /etc/apt/keyrings/pova.gpg > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/pova.gpg] https://p0r0ro.github.io/pova/apt stable main" | sudo tee /etc/apt/sources.list.d/pova.list
+sudo apt update && sudo apt install pova
+```
+
+The repository holds the same `.deb` as the release page, signed with pova's
+own key.
+
 ### Fedora (.rpm)
 
 `dnf` installs pova and pulls in mpv, yt-dlp and pipewire-utils from Fedora's
 own repositories. pova also shows up in your app menu.
 
 ```sh
-sudo dnf install https://github.com/P0r0ro/pova/releases/download/v1.2.0/pova-1.2.0-1.x86_64.rpm
+sudo dnf install https://github.com/P0r0ro/pova/releases/download/v1.2.2/pova-1.2.2-1.x86_64.rpm
 ```
 
 ### Debian and Ubuntu (.deb)
@@ -89,8 +111,8 @@ sudo dnf install https://github.com/P0r0ro/pova/releases/download/v1.2.0/pova-1.
 up in your app menu.
 
 ```sh
-curl -LO https://github.com/P0r0ro/pova/releases/download/v1.2.0/pova_1.2.0-1_amd64.deb
-sudo apt install ./pova_1.2.0-1_amd64.deb
+curl -LO https://github.com/P0r0ro/pova/releases/download/v1.2.2/pova_1.2.2-1_amd64.deb
+sudo apt install ./pova_1.2.2-1_amd64.deb
 ```
 
 On older releases such as Ubuntu 22.04, the distro's yt-dlp is often too old
@@ -102,9 +124,9 @@ One file that runs on any distro. You install pova's helpers yourself
 ([see below](#the-helpers-pova-needs)).
 
 ```sh
-curl -LO https://github.com/P0r0ro/pova/releases/download/v1.2.0/pova-v1.2.0-x86_64.AppImage
-chmod +x pova-v1.2.0-x86_64.AppImage
-./pova-v1.2.0-x86_64.AppImage
+curl -LO https://github.com/P0r0ro/pova/releases/download/v1.2.2/pova-v1.2.2-x86_64.AppImage
+chmod +x pova-v1.2.2-x86_64.AppImage
+./pova-v1.2.2-x86_64.AppImage
 ```
 
 ### Prebuilt binary
@@ -113,9 +135,9 @@ A plain binary plus the sign-in helper. You install pova's helpers yourself
 ([see below](#the-helpers-pova-needs)).
 
 ```sh
-curl -LO https://github.com/P0r0ro/pova/releases/download/v1.2.0/pova-v1.2.0-x86_64-linux.tar.gz
-tar xzf pova-v1.2.0-x86_64-linux.tar.gz
-install -Dm755 pova-v1.2.0-x86_64-linux/pova ~/.local/bin/pova
+curl -LO https://github.com/P0r0ro/pova/releases/download/v1.2.2/pova-v1.2.2-x86_64-linux.tar.gz
+tar xzf pova-v1.2.2-x86_64-linux.tar.gz
+install -Dm755 pova-v1.2.2-x86_64-linux/pova ~/.local/bin/pova
 ```
 
 ### From crates.io or source
@@ -130,7 +152,7 @@ cargo install pova
 Or build straight from GitHub:
 
 ```sh
-cargo install --git https://github.com/P0r0ro/pova --tag v1.2.0
+cargo install --git https://github.com/P0r0ro/pova --tag v1.2.2
 ```
 
 ### The helpers pova needs
@@ -206,7 +228,7 @@ This needs you to sign in once (next section).
 ### And also
 
 - **Four visualizer modes** (`v`): stereo bars, mirror, mono and a waveform.
-- **Every btop theme** (`t`): pova reads btop's `.theme` files as they are, with a live preview.
+- **Every btop theme** (`t`): pova reads btop's `.theme` files as they are, with a live preview. The four Catppuccin flavours are built in.
 - **The Esc menu**: btop-style, with the pova logo drawn in block characters, for themes, the visualizer, autoplay and album art.
 - **Your library** (`b`): your playlists, liked songs and history once you're signed in.
 - **Your playlists** (`p`): add the song you're on to one of your playlists or a new one, take songs out with `d`, and delete a playlist with `D` (it asks first).

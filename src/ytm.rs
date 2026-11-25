@@ -1395,20 +1395,34 @@ async fn playlist_tracks(client: &Client, id: &str) -> anyhow::Result<Vec<Item>>
     } else {
         format!("VL{id}")
     };
-    let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw(browse_id));
-    // Keep every page that parsed: one odd item on a later page (ytmapi-rs
-    // parse error) must not throw away the whole list.
+    let query = GetPlaylistTracksQuery::new(PlaylistID::from_raw(browse_id.clone()));
     let results: Vec<ytmapi_rs::Result<Vec<PlaylistItem>>> =
         with_yt!(client, yt => yt.stream(&query).take(MAX_PAGES).collect().await);
     let mut pages: Vec<Vec<PlaylistItem>> = Vec::new();
+    let mut failed = None;
     for r in results {
         match r {
             Ok(page) => pages.push(page),
-            Err(e) if pages.is_empty() => return Err(e.into()),
             Err(e) => {
-                tracing::warn!("playlist {id}: stopping after {} pages: {e}", pages.len());
+                failed = Some(e);
                 break;
             }
+        }
+    }
+    if let Some(e) = failed {
+        // ytmapi-rs drops a whole page over one odd entry (and can't go on to
+        // the next page): read the list again leniently instead.
+        tracing::info!(
+            "playlist {id}: ytmapi-rs couldn't read page {}, reading it leniently: {e}",
+            pages.len() + 1
+        );
+        match with_yt!(client, yt => crate::lenient::playlist_tracks(yt, &browse_id, MAX_PAGES).await) {
+            Ok(tracks) => return Ok(tracks.into_iter().map(Item::Track).collect()),
+            Err(le) if pages.is_empty() => return Err(le),
+            Err(le) => tracing::warn!(
+                "playlist {id}: lenient read failed too, keeping {} pages: {le}",
+                pages.len()
+            ),
         }
     }
     Ok(pages

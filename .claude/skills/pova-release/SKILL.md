@@ -45,6 +45,11 @@ OK before step 6.**
    Then verify on a clean container:
    `podman run --rm fedora:latest bash -c 'dnf install -y dnf-plugins-core; dnf copr enable -y p0r0ro/pova; dnf install -y pova; pova --version'`.
 9. **AUR checksums** on a branch: `scripts/release.sh aur`, commit, PR, merge.
+   **apt repository**: `apt.yml` starts by itself after the release build;
+   check its run is green and that
+   `curl -s https://p0r0ro.github.io/pova/apt/dists/stable/main/binary-amd64/Packages | grep ^Version`
+   lists X.Y.Z. If it failed for lack of the `APT_SIGNING_KEY` secret, tell
+   the maintainer (never create or store that key yourself).
 10. Tell the maintainer what was published and where; update their local
     install (`~/.cargo/bin`): `cargo install --path <checkout of the tag>
     --locked --force` and copy `scripts/import-cookie.sh` to
