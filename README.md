@@ -11,6 +11,16 @@
   <a href="https://github.com/ratatui/awesome-ratatui#music-and-audio"><img src="https://awesome.re/mentioned-badge.svg" alt="Mentioned in Awesome Ratatui"></a>
 </p>
 
+<p align="center">
+  <a href="https://github.com/P0r0ro/pova/releases/latest"><img src="https://img.shields.io/github/v/release/P0r0ro/pova" alt="Latest release"></a>
+  <a href="https://crates.io/crates/pova"><img src="https://img.shields.io/crates/v/pova" alt="crates.io version"></a>
+  <a href="https://crates.io/crates/pova"><img src="https://img.shields.io/crates/d/pova" alt="crates.io downloads"></a>
+  <a href="https://copr.fedorainfracloud.org/coprs/p0r0ro/pova/"><img src="https://copr.fedorainfracloud.org/coprs/p0r0ro/pova/package/pova/status_image/last_build.png" alt="Fedora COPR build"></a>
+  <a href="https://github.com/P0r0ro/pova/actions/workflows/ci.yml"><img src="https://github.com/P0r0ro/pova/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/P0r0ro/pova" alt="MIT license"></a>
+  <a href="https://ratatui.rs/"><img src="https://ratatui.rs/built-with-ratatui/badge.svg" alt="Built With Ratatui"></a>
+</p>
+
 ---
 
 ## So what is this
