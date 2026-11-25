@@ -193,6 +193,14 @@ impl Queue {
         }
     }
 
+    /// Drop the songs after the current one, keeping what already played.
+    pub fn truncate_after_current(&mut self) {
+        match self.current {
+            Some(c) => self.entries.truncate(c + 1),
+            None => self.entries.clear(),
+        }
+    }
+
     fn shuffle_upcoming(&mut self) {
         let start = self.current.map_or(0, |c| c + 1);
         if start < self.len() {

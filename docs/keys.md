@@ -12,7 +12,7 @@ including any keys you've remapped.
 | `<` `>` or `P` `N` | previous / next track | `j` `k` `↑` `↓` `g` `G` | move around lists |
 | `+` `-` `m` | volume, mute | `enter` | play or open the selection |
 | `S` `R` | shuffle, repeat (off / all / one) | `a` / `A` | add to queue / play next |
-| `f` | like or unlike the current song | `r` | start a radio from the selection |
+| `f` | like or unlike the current song | `r` | start a radio from the selection; on the playing song it keeps playing and only what's next is replaced |
 | `F` | dislike the current song and skip it | | |
 | `p` | add the selected (or playing) song to one of your playlists, or a new one | `d` in Library | remove the selected song from your open playlist |
 | `D` in Library | delete the selected or open playlist (asks yes / no first, starts on no) | | |
