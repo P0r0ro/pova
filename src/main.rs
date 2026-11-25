@@ -4,6 +4,7 @@ mod app;
 mod art;
 mod config;
 mod control;
+mod innertube;
 mod keymap;
 mod lenient;
 mod lyrics;
@@ -337,7 +338,12 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
 
     let (ytm_tx, ytm_req_rx) = unbounded_channel();
     let (ytm_ev_tx, mut ytm_rx) = unbounded_channel();
-    tokio::spawn(ytm::run(paths.cookie_file(), ytm_req_rx, ytm_ev_tx));
+    tokio::spawn(ytm::run(
+        paths.cookie_file(),
+        state.account.clone(),
+        ytm_req_rx,
+        ytm_ev_tx,
+    ));
 
     let (lyrics_tx, lyrics_req_rx) = unbounded_channel();
     let (lyrics_ev_tx, mut lyrics_rx) = unbounded_channel();
