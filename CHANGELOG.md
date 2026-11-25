@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.4 — queue refill fix, radio from the playing song
 
 - **Fixed: nothing played after clearing the queue.** With autoplay on, `C`
   now keeps the current song and fetches fresh similar songs shortly before
