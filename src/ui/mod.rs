@@ -337,6 +337,12 @@ fn draw_player(f: &mut Frame, app: &mut App, area: Rect) {
         login,
         Span::styled("┌─", Style::new().fg(border)),
     ];
+    let right_w = spans_width(&right);
+    if area.width > right_w + 2 && area.height >= 2 {
+        let rx = area.x + area.width - 1 - right_w;
+        app.hits
+            .add(Rect::new(rx, area.y + area.height - 1, right_w, 1), Hit::Auth);
+    }
     let mut block = boxed(app, border)
         .title(Line::from(title))
         .title_bottom(Line::from(right).alignment(Alignment::Right));

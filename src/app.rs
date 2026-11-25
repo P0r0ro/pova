@@ -165,9 +165,69 @@ impl SearchState {
     }
 }
 
+/// How often pova re-checks the browser while waiting for sign-in to complete.
+pub const AUTH_POLL_INTERVAL: Duration = Duration::from_secs(10);
+/// Stop polling automatically after 3 minutes ("Check now" still works anytime).
+pub const AUTH_POLL_TIMEOUT: Duration = Duration::from_secs(180);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthInput {
+    /// Custom `yt-dlp --cookies-from-browser` spec, e.g. `chrome:Profile 2`.
+    CustomBrowser(String),
+    /// Raw Cookie header pasted manually (rendered masked).
+    PasteCookie(String),
+}
+
+#[derive(Clone)]
+pub struct AuthWaiting {
+    pub spec: String,
+    pub label: String,
+    pub browser_opened: bool,
+    pub started: Instant,
+    pub next_poll: Instant,
+    pub checking: bool,
+}
+
+pub struct AuthUi {
+    pub profiles: Vec<crate::auth::BrowserProfile>,
+    pub profiles_loaded: bool,
+    pub selected: usize,
+    pub input: Option<AuthInput>,
+    /// Status text shown alongside the spinner while checking a profile or saving a cookie.
+    pub busy: Option<String>,
+    /// Waiting for the user to finish signing in at `https://music.youtube.com`.
+    pub waiting: Option<AuthWaiting>,
+}
+
+impl AuthUi {
+    pub fn new() -> Self {
+        Self {
+            profiles: Vec::new(),
+            profiles_loaded: false,
+            selected: 0,
+            input: None,
+            busy: None,
+            waiting: None,
+        }
+    }
+
+    /// Detect installed browser profiles on demand (first time the sign-in
+    /// screen is shown), keeping startup free of browser-directory I/O for
+    /// users who are already signed in.
+    pub fn ensure_profiles(&mut self) {
+        if !self.profiles_loaded {
+            self.profiles_loaded = true;
+            if self.profiles.is_empty() {
+                self.profiles = crate::auth::detect_profiles();
+            }
+        }
+    }
+}
+
 pub struct LibraryState {
     pub section: LibSection,
     pub stack: Vec<ListView>,
+    pub auth: AuthUi,
 }
 
 pub enum LyricsState {
@@ -226,6 +286,16 @@ pub enum Overlay {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Confirmed {
     DeletePlaylist { id: String, title: String },
+    SignOut,
+}
+
+impl Confirmed {
+    pub fn confirm_label(&self) -> &'static str {
+        match self {
+            Confirmed::DeletePlaylist { .. } => "  Yes, delete  ",
+            Confirmed::SignOut => "  Yes, sign out  ",
+        }
+    }
 }
 
 /// Entries of the Esc menu (btop-style options).
@@ -237,18 +307,20 @@ pub enum MenuItem {
     AlbumArt,
     Loudness,
     Notifications,
+    Account,
     Help,
     Quit,
 }
 
 impl MenuItem {
-    pub const ALL: [MenuItem; 8] = [
+    pub const ALL: [MenuItem; 9] = [
         MenuItem::Themes,
         MenuItem::VizMode,
         MenuItem::Autoplay,
         MenuItem::AlbumArt,
         MenuItem::Loudness,
         MenuItem::Notifications,
+        MenuItem::Account,
         MenuItem::Help,
         MenuItem::Quit,
     ];
@@ -272,6 +344,13 @@ pub enum Hit {
     SearchFilter(SearchFilter),
     LibSection(LibSection),
     Suggestion(usize),
+    Auth,
+    AuthProfile(usize),
+    AuthCustomBrowser,
+    AuthPasteCookie,
+    AuthCheckNow,
+    AuthOpenBrowser,
+    AuthCancel,
     CloseError,
 }
 
@@ -482,6 +561,7 @@ impl App {
             library: LibraryState {
                 section: LibSection::Playlists,
                 stack: Vec::new(),
+                auth: AuthUi::new(),
             },
             lyrics: LyricsState::None,
             lyrics_scroll: None,
@@ -571,6 +651,7 @@ impl App {
             MenuItem::AlbumArt => format!("Album art      ‹ {} ›", on_off(self.cfg.album_art)),
             MenuItem::Loudness => format!("Even loudness  ‹ {} ›", on_off(self.cfg.normalize_loudness)),
             MenuItem::Notifications => format!("Notifications  ‹ {} ›", on_off(self.cfg.notifications)),
+            MenuItem::Account => if self.logged_in { "Sign out" } else { "Sign in" }.into(),
             MenuItem::Help => "Help".into(),
             MenuItem::Quit => "Quit".into(),
         }
@@ -579,6 +660,7 @@ impl App {
     fn activate_menu(&mut self, item: MenuItem, forward: bool) {
         match item {
             MenuItem::Themes => self.open_themes(),
+            MenuItem::Account => self.open_account_action(),
             MenuItem::Help => self.overlay = Some(Overlay::Help { scroll: 0 }),
             MenuItem::Quit => self.quit = true,
             MenuItem::Loudness => {
@@ -688,6 +770,13 @@ impl App {
         self.art_loading
             || self.player.buffering
             || self.load_started.is_some()
+            || self.library.auth.busy.is_some()
+            || self
+                .library
+                .auth
+                .waiting
+                .as_ref()
+                .is_some_and(|w| w.checking || w.started.elapsed() <= AUTH_POLL_TIMEOUT)
             || matches!(self.lyrics, LyricsState::Loading { .. })
             || self.search.stack.iter().chain(&self.library.stack).any(|l| l.loading)
     }
@@ -695,6 +784,17 @@ impl App {
     /// Per-frame housekeeping. Returns true if a redraw is needed.
     pub fn tick(&mut self) -> bool {
         self.update_dwell();
+        if let Some(w) = self.library.auth.waiting.as_mut()
+            && !w.checking
+            && w.started.elapsed() <= AUTH_POLL_TIMEOUT
+            && Instant::now() >= w.next_poll
+        {
+            w.checking = true;
+            let _ = self.tx.ytm.send(YtmReq::PollSignIn {
+                spec: w.spec.clone(),
+                label: w.label.clone(),
+            });
+        }
         if let Some(due) = self.search.suggest_due
             && Instant::now() >= due
         {
@@ -905,8 +1005,8 @@ impl App {
         let Some(t) = self.current() else { return };
         if !self.logged_in {
             self.flash(
-                "Disliking songs needs you to be signed in. Run `pova-import-cookie chrome` \
-                 (or firefox) in another terminal; pova signs in by itself once it's saved.",
+                "Disliking songs needs you to be signed in. Open the Library tab (b) to sign in, \
+                 or run `pova login`.",
                 true,
             );
             return;
@@ -1204,16 +1304,18 @@ impl App {
             YtmEvent::Auth { logged_in, message } => {
                 let was = self.logged_in;
                 self.logged_in = logged_in;
+                self.library.auth.busy = None;
+                self.library.auth.waiting = None;
                 if !logged_in || !was {
                     // Drop stale likes on sign-out or when switching accounts.
                     self.likes.clear();
                     self.likes_loaded = false;
                 }
-                if logged_in && !was && self.auth_seen {
-                    self.flash("Signed in to YouTube Music", false);
-                }
-                self.auth_seen = true;
                 if logged_in {
+                    self.library.auth.input = None;
+                    if !was && self.auth_seen {
+                        self.flash("Signed in to YouTube Music", false);
+                    }
                     // Learn what's already liked so ♥ shows and `f` toggles correctly.
                     let token = self.token();
                     self.pending.insert(token, Pending::LikedSet);
@@ -1221,9 +1323,40 @@ impl App {
                         token,
                         view: View::LikedSongs,
                     });
+                    // Load the Library immediately if the user is looking at it
+                    // (or clear stale signed-out errors).
+                    if self.tab == Tab::Library {
+                        self.switch_library(self.library.section);
+                    } else {
+                        self.library.stack.clear();
+                    }
+                } else {
+                    self.library.stack.clear();
                 }
+                self.auth_seen = true;
                 if let Some(m) = message {
                     self.flash(m, true);
+                }
+            }
+            YtmEvent::AuthNeedsBrowser {
+                spec,
+                label,
+                browser_opened,
+            } => {
+                self.library.auth.busy = None;
+                self.library.auth.waiting = Some(AuthWaiting {
+                    spec,
+                    label,
+                    browser_opened,
+                    started: Instant::now(),
+                    next_poll: Instant::now() + AUTH_POLL_INTERVAL,
+                    checking: false,
+                });
+            }
+            YtmEvent::AuthPollPending => {
+                if let Some(w) = self.library.auth.waiting.as_mut() {
+                    w.checking = false;
+                    w.next_poll = Instant::now() + AUTH_POLL_INTERVAL;
                 }
             }
             YtmEvent::Loaded { token, title, items } => {
@@ -1574,7 +1707,8 @@ impl App {
             }
             C::Like => {
                 if !self.logged_in {
-                    return "error liking songs needs you to be signed in (pova-import-cookie chrome)".into();
+                    return "error liking songs needs you to be signed in (run `pova login` or open the Library tab)"
+                        .into();
                 }
                 if !has_track {
                     return "error nothing is playing".into();
@@ -1584,7 +1718,8 @@ impl App {
             }
             C::Dislike => {
                 if !self.logged_in {
-                    return "error disliking songs needs you to be signed in (pova-import-cookie chrome)".into();
+                    return "error disliking songs needs you to be signed in (run `pova login` or open the Library tab)"
+                        .into();
                 }
                 if !has_track {
                     return "error nothing is playing".into();
@@ -1680,6 +1815,29 @@ impl App {
                     let room = 150usize.saturating_sub(name.chars().count());
                     name.extend(text.chars().filter(|c| !c.is_control()).take(room));
                     self.dirty = true;
+                } else if self.tab == Tab::Library
+                    && !self.logged_in
+                    && self.library.auth.busy.is_none()
+                    && self.library.auth.waiting.is_none()
+                {
+                    match self.library.auth.input.as_mut() {
+                        Some(AuthInput::CustomBrowser(val)) => {
+                            let room = 200usize.saturating_sub(val.chars().count());
+                            val.extend(text.chars().filter(|c| !c.is_control()).take(room));
+                            self.dirty = true;
+                        }
+                        Some(AuthInput::PasteCookie(val)) => {
+                            let room = 32_768usize.saturating_sub(val.chars().count());
+                            val.extend(text.chars().filter(|c| !c.is_control()).take(room));
+                            self.dirty = true;
+                        }
+                        None if text.contains("SAPISID=") || text.contains("__Secure-3PAPISID=") => {
+                            let cleaned: String = text.chars().filter(|c| !c.is_control()).take(32_768).collect();
+                            self.library.auth.input = Some(AuthInput::PasteCookie(cleaned));
+                            self.dirty = true;
+                        }
+                        None => {}
+                    }
                 } else if self.search.editing {
                     let before = self.search.input.clone();
                     for c in text.chars().filter(|c| !c.is_control()) {
@@ -1709,11 +1867,164 @@ impl App {
             self.on_overlay_key(k);
             return;
         }
+        if self.tab == Tab::Library && !self.logged_in && self.library.auth.waiting.is_some() {
+            match k.code {
+                KeyCode::Esc => {
+                    self.library.auth.waiting = None;
+                    return;
+                }
+                KeyCode::Enter => {
+                    self.poll_auth_now();
+                    return;
+                }
+                KeyCode::Char('o') | KeyCode::Char('O') if !k.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.open_sign_in_link();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if self.tab == Tab::Library
+            && !self.logged_in
+            && self.library.auth.busy.is_none()
+            && self.library.auth.input.is_some()
+        {
+            self.on_auth_input_key(k);
+            return;
+        }
+        if self.tab == Tab::Library
+            && !self.logged_in
+            && self.library.auth.busy.is_none()
+            && self.library.auth.waiting.is_none()
+            && !k.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            match k.code {
+                KeyCode::Char('o') | KeyCode::Char('O') => {
+                    self.open_sign_in_link();
+                    return;
+                }
+                KeyCode::Char('p') => {
+                    self.library.auth.input = Some(AuthInput::CustomBrowser(String::new()));
+                    return;
+                }
+                KeyCode::Char('c') => {
+                    self.library.auth.input = Some(AuthInput::PasteCookie(String::new()));
+                    return;
+                }
+                _ => {}
+            }
+        }
         if self.tab == Tab::Search && self.search.editing && self.on_edit_key(k) {
             return;
         }
         if let Some(action) = self.keymap.action(&k) {
             self.dispatch(action);
+        }
+    }
+
+    fn on_auth_input_key(&mut self, k: KeyEvent) {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        let Some(input) = self.library.auth.input.as_mut() else {
+            return;
+        };
+        match k.code {
+            KeyCode::Esc => {
+                self.library.auth.input = None;
+            }
+            KeyCode::Backspace => match input {
+                AuthInput::CustomBrowser(s) | AuthInput::PasteCookie(s) => {
+                    s.pop();
+                }
+            },
+            KeyCode::Char('u') if ctrl => match input {
+                AuthInput::CustomBrowser(s) | AuthInput::PasteCookie(s) => s.clear(),
+            },
+            KeyCode::Enter => match self.library.auth.input.take() {
+                Some(AuthInput::CustomBrowser(spec)) => {
+                    let spec = spec.trim().to_string();
+                    if spec.is_empty() {
+                        self.library.auth.input = Some(AuthInput::CustomBrowser(String::new()));
+                        return;
+                    }
+                    self.library.auth.busy = Some(spec.clone());
+                    let _ = self.tx.ytm.send(YtmReq::ImportBrowser {
+                        label: spec.clone(),
+                        spec,
+                    });
+                }
+                Some(AuthInput::PasteCookie(raw)) => {
+                    if raw.trim().is_empty() {
+                        self.library.auth.input = Some(AuthInput::PasteCookie(String::new()));
+                        return;
+                    }
+                    self.library.auth.busy = Some("cookie".into());
+                    let _ = self.tx.ytm.send(YtmReq::SaveCookie { raw });
+                }
+                None => {}
+            },
+            KeyCode::Char(c) if !ctrl => match input {
+                AuthInput::CustomBrowser(s) if s.chars().count() < 200 => s.push(c),
+                AuthInput::PasteCookie(s) if s.chars().count() < 32_768 => s.push(c),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    fn select_auth_profile(&mut self, idx: usize) {
+        if self.logged_in || self.library.auth.busy.is_some() || self.library.auth.waiting.is_some() {
+            return;
+        }
+        self.library.auth.ensure_profiles();
+        let Some(p) = self.library.auth.profiles.get(idx).cloned() else {
+            return;
+        };
+        self.library.auth.selected = idx;
+        self.library.auth.input = None;
+        self.library.auth.busy = Some(format!("signing in with {}", p.label));
+        let _ = self.tx.ytm.send(YtmReq::ImportBrowser {
+            spec: p.spec,
+            label: p.label,
+        });
+    }
+
+    fn poll_auth_now(&mut self) {
+        if let Some(w) = self.library.auth.waiting.as_mut()
+            && !w.checking
+        {
+            w.checking = true;
+            w.started = Instant::now();
+            let _ = self.tx.ytm.send(YtmReq::PollSignIn {
+                spec: w.spec.clone(),
+                label: w.label.clone(),
+            });
+        }
+    }
+
+    fn open_sign_in_link(&mut self) {
+        let spec = if let Some(w) = self.library.auth.waiting.as_ref() {
+            Some(w.spec.clone())
+        } else {
+            self.library.auth.ensure_profiles();
+            self.library
+                .auth
+                .profiles
+                .get(self.library.auth.selected)
+                .map(|p| p.spec.clone())
+        };
+        let _ = self.tx.ytm.send(YtmReq::OpenSignInLink { spec });
+        self.flash("Opened https://music.youtube.com", false);
+    }
+
+    fn open_account_action(&mut self) {
+        if self.logged_in {
+            self.overlay = Some(Overlay::Confirm {
+                question: "Sign out of YouTube Music? You can sign back in anytime from the Library tab.".into(),
+                on_yes: Confirmed::SignOut,
+                yes: false,
+            });
+        } else {
+            self.set_tab(Tab::Library);
         }
     }
 
@@ -1865,8 +2176,12 @@ impl App {
                 }
             }
             Tab::Library => {
-                if self.library.stack.is_empty() {
-                    self.switch_library(self.library.section);
+                if self.logged_in {
+                    if self.library.stack.is_empty() {
+                        self.switch_library(self.library.section);
+                    }
+                } else {
+                    self.library.auth.ensure_profiles();
                 }
             }
             Tab::Queue if self.queue_state.selected().is_none() => {
@@ -1896,6 +2211,20 @@ impl App {
     }
 
     fn move_selection(&mut self, delta: isize) {
+        if self.tab == Tab::Library && !self.logged_in {
+            if self.library.auth.busy.is_none()
+                && self.library.auth.waiting.is_none()
+                && self.library.auth.input.is_none()
+            {
+                self.library.auth.ensure_profiles();
+                let len = self.library.auth.profiles.len();
+                if len > 0 {
+                    let cur = self.library.auth.selected.min(len - 1) as isize;
+                    self.library.auth.selected = (cur + delta).clamp(0, len as isize - 1) as usize;
+                }
+            }
+            return;
+        }
         if self.tab == Tab::Lyrics {
             let cur = self.lyrics_scroll.unwrap_or(self.lyrics_auto) as isize;
             self.lyrics_scroll = Some((cur + delta).max(0) as u16);
@@ -1989,8 +2318,8 @@ impl App {
                 let Some(t) = self.current() else { return };
                 if !self.logged_in {
                     self.flash(
-                        "Liking songs needs you to be signed in. Run `pova-import-cookie chrome` \
-                         (or firefox) in another terminal; pova signs in by itself once it's saved.",
+                        "Liking songs needs you to be signed in. Open the Library tab (b) to sign in, \
+                         or run `pova login`.",
                         true,
                     );
                     return;
@@ -2097,7 +2426,11 @@ impl App {
                         let all = LibSection::ALL;
                         let i = all.iter().position(|s| *s == self.library.section).unwrap_or(0);
                         let n = all.len();
-                        self.switch_library(all[if fwd { (i + 1) % n } else { (i + n - 1) % n }]);
+                        let next = all[if fwd { (i + 1) % n } else { (i + n - 1) % n }];
+                        self.library.section = next;
+                        if self.logged_in {
+                            self.switch_library(next);
+                        }
                     }
                     _ => {}
                 }
@@ -2164,7 +2497,16 @@ impl App {
                     }
                 }
             }
-            Tab::Search | Tab::Library => self.select_in_browser(mode),
+            Tab::Search => self.select_in_browser(mode),
+            Tab::Library => {
+                if !self.logged_in {
+                    if mode == EnqueueMode::PlayNow {
+                        self.select_auth_profile(self.library.auth.selected);
+                    }
+                } else {
+                    self.select_in_browser(mode);
+                }
+            }
             Tab::NowPlaying | Tab::Lyrics => {
                 if mode == EnqueueMode::PlayNow {
                     self.dispatch(Action::PlayPause);
@@ -2258,8 +2600,7 @@ impl App {
     fn open_playlist_picker(&mut self) {
         if !self.logged_in {
             self.flash(
-                "Playlists need you to be signed in. Run `pova-import-cookie chrome` (or firefox) \
-                 in another terminal; pova signs in by itself once it's saved.",
+                "Playlists need you to be signed in. Open the Library tab (b) to sign in, or run `pova login`.",
                 true,
             );
             return;
@@ -2293,7 +2634,7 @@ impl App {
         }
         if !self.logged_in {
             self.flash(
-                "Deleting playlists needs you to be signed in (pova-import-cookie chrome)",
+                "Deleting playlists needs you to be signed in. Open the Library tab (b) to sign in, or run `pova login`.",
                 true,
             );
             return;
@@ -2343,6 +2684,10 @@ impl App {
                     title: title.clone(),
                 });
                 self.flash(format!("Deleting {title}…"), false);
+            }
+            Confirmed::SignOut => {
+                let _ = self.tx.ytm.send(YtmReq::SignOut);
+                self.flash("Signed out", false);
             }
         }
     }
@@ -2649,7 +2994,12 @@ impl App {
             self.dispatch(if down { Action::VolumeDown } else { Action::VolumeUp });
             return;
         }
-        self.move_selection(if down { 3 } else { -3 });
+        let step = if self.tab == Tab::Library && !self.logged_in {
+            1
+        } else {
+            3
+        };
+        self.move_selection(if down { step } else { -step });
     }
 
     fn is_header_at(&self, idx: usize) -> bool {
@@ -2707,7 +3057,27 @@ impl App {
                         self.submit_search();
                     }
                 }
-                Hit::LibSection(s) => self.switch_library(s),
+                Hit::LibSection(s) => {
+                    self.library.section = s;
+                    if self.logged_in {
+                        self.switch_library(s);
+                    }
+                }
+                Hit::Auth => self.open_account_action(),
+                Hit::AuthProfile(i) => self.select_auth_profile(i),
+                Hit::AuthCustomBrowser => {
+                    if !self.logged_in && self.library.auth.busy.is_none() && self.library.auth.waiting.is_none() {
+                        self.library.auth.input = Some(AuthInput::CustomBrowser(String::new()));
+                    }
+                }
+                Hit::AuthPasteCookie => {
+                    if !self.logged_in && self.library.auth.busy.is_none() && self.library.auth.waiting.is_none() {
+                        self.library.auth.input = Some(AuthInput::PasteCookie(String::new()));
+                    }
+                }
+                Hit::AuthCheckNow => self.poll_auth_now(),
+                Hit::AuthOpenBrowser => self.open_sign_in_link(),
+                Hit::AuthCancel => self.library.auth.waiting = None,
                 Hit::CloseError => {
                     self.flash = None;
                     self.dirty = true;
@@ -2941,7 +3311,7 @@ mod search_tests {
         assert!(
             app.flash
                 .as_ref()
-                .is_some_and(|f| f.error && f.text.contains("pova-import-cookie"))
+                .is_some_and(|f| f.error && f.text.contains("pova login"))
         );
 
         let (mut app, mut rx) = signed_in(&["a"]);
@@ -3702,9 +4072,181 @@ mod playlist_tests {
         assert!(
             app.flash
                 .as_ref()
-                .is_some_and(|f| f.error && f.text.contains("pova-import-cookie"))
+                .is_some_and(|f| f.error && f.text.contains("pova login"))
         );
         assert!(reqs(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn library_sign_in_shows_link_and_profiles_and_loads_on_auth() {
+        let (mut app, mut rx) = app();
+        // Browser profiles are detected lazily, not at App::new().
+        assert!(!app.library.auth.profiles_loaded);
+        assert!(app.library.auth.profiles.is_empty());
+
+        app.library.auth.profiles = vec![
+            crate::auth::BrowserProfile {
+                spec: "brave:Default".into(),
+                label: "Brave — Personal".into(),
+                default: true,
+            },
+            crate::auth::BrowserProfile {
+                spec: "brave:Profile 2".into(),
+                label: "Brave — Music".into(),
+                default: false,
+            },
+        ];
+        app.library.auth.profiles_loaded = true;
+        app.library.auth.selected = 0;
+
+        // Opening Library while signed out shows the link + detected profiles immediately.
+        key(&mut app, KeyCode::Char('b'));
+        assert_eq!(app.tab, Tab::Library);
+        assert!(reqs(&mut rx).is_empty());
+        let shown = screen(&mut app);
+        assert!(shown.contains("https://music.youtube.com"), "{shown}");
+        assert!(shown.contains("Brave — Personal"), "{shown}");
+        assert!(shown.contains("Brave — Music"), "{shown}");
+
+        // Move to the second Brave profile and press Enter.
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.library.auth.busy.as_deref(), Some("signing in with Brave — Music"));
+        assert!(app.animating());
+        let sent = reqs(&mut rx);
+        assert!(
+            sent.iter()
+                .any(|r| matches!(r, YtmReq::ImportBrowser { spec, .. } if spec == "brave:Profile 2")),
+            "{sent:?}"
+        );
+
+        // When auth succeeds, spinner clears and Library loads immediately.
+        app.on_ytm(YtmEvent::Auth {
+            logged_in: true,
+            message: None,
+        });
+        assert!(app.library.auth.busy.is_none());
+        assert!(!app.library.stack.is_empty());
+        let sent = reqs(&mut rx);
+        assert!(
+            sent.iter().any(|r| matches!(
+                r,
+                YtmReq::Load {
+                    view: View::LibraryPlaylists,
+                    ..
+                }
+            )),
+            "{sent:?}"
+        );
+    }
+
+    #[test]
+    fn library_sign_in_paste_cookie_is_masked_and_submits() {
+        let (mut app, mut rx) = app();
+        app.tab = Tab::Library;
+
+        // Direct paste of a Cookie header switches straight to the masked paste box.
+        app.on_terminal(Event::Paste("SAPISID=super_secret_token; SID=abc".into()));
+        let shown = screen(&mut app);
+        assert!(shown.contains("Paste YouTube Music cookie"), "{shown}");
+        assert!(!shown.contains("super_secret_token"), "cookie must never be echoed");
+        assert!(shown.contains("•"), "cookie should be masked");
+
+        key(&mut app, KeyCode::Enter);
+        let sent = reqs(&mut rx);
+        assert!(
+            sent.iter()
+                .any(|r| matches!(r, YtmReq::SaveCookie { raw } if raw.contains("SAPISID=super_secret_token"))),
+            "{sent:?}"
+        );
+    }
+
+    #[test]
+    fn library_sign_in_custom_browser_profile_submits_and_esc_returns() {
+        let (mut app, mut rx) = app();
+        app.tab = Tab::Library;
+        key(&mut app, KeyCode::Char('p'));
+        assert!(matches!(app.library.auth.input, Some(AuthInput::CustomBrowser(_))));
+        key(&mut app, KeyCode::Esc);
+        assert!(app.library.auth.input.is_none());
+
+        key(&mut app, KeyCode::Char('p'));
+        app.on_terminal(Event::Paste("chrome:Profile 2".into()));
+        key(&mut app, KeyCode::Enter);
+        let sent = reqs(&mut rx);
+        assert!(
+            sent.iter()
+                .any(|r| matches!(r, YtmReq::ImportBrowser { spec, .. } if spec == "chrome:Profile 2")),
+            "{sent:?}"
+        );
+    }
+
+    #[test]
+    fn library_sign_in_waits_for_profile_login_and_polls() {
+        let (mut app, mut rx) = app();
+        app.library.auth.profiles = vec![crate::auth::BrowserProfile {
+            spec: "brave:Profile 2".into(),
+            label: "Brave — Music".into(),
+            default: true,
+        }];
+        app.library.auth.profiles_loaded = true;
+        app.tab = Tab::Library;
+
+        // Selecting a profile that isn't signed in yet opens the link & waits for that profile.
+        key(&mut app, KeyCode::Enter);
+        let _ = reqs(&mut rx);
+        app.on_ytm(YtmEvent::AuthNeedsBrowser {
+            spec: "brave:Profile 2".into(),
+            label: "Brave — Music".into(),
+            browser_opened: true,
+        });
+        assert!(app.library.auth.busy.is_none());
+        let w = app.library.auth.waiting.as_ref().expect("waiting state");
+        assert!(w.next_poll >= w.started + Duration::from_secs(9));
+        assert!(app.animating());
+        let shown = screen(&mut app);
+        assert!(shown.contains("https://music.youtube.com"), "{shown}");
+        assert!(shown.contains("Brave — Music"), "{shown}");
+        assert!(shown.contains("Check now"), "{shown}");
+
+        // Pressing Enter checks immediately; pending reply keeps waiting cleanly.
+        key(&mut app, KeyCode::Enter);
+        let sent = reqs(&mut rx);
+        assert!(
+            sent.iter()
+                .any(|r| matches!(r, YtmReq::PollSignIn { spec, .. } if spec == "brave:Profile 2")),
+            "{sent:?}"
+        );
+        app.on_ytm(YtmEvent::AuthPollPending);
+        assert!(app.library.auth.waiting.is_some());
+        assert!(app.flash.is_none(), "pending poll must not flash an error");
+
+        // After 3 minutes, automatic polling stops, while "Check now" still works.
+        if let Some(w) = app.library.auth.waiting.as_mut() {
+            w.started = Instant::now() - AUTH_POLL_TIMEOUT - Duration::from_secs(1);
+            w.next_poll = Instant::now() - Duration::from_secs(1);
+        }
+        assert!(!app.animating());
+        app.tick();
+        assert!(reqs(&mut rx).is_empty(), "must not auto-poll past 3 minutes");
+
+        // Pressing 'o' reopens the link; Esc cancels waiting cleanly.
+        key(&mut app, KeyCode::Char('o'));
+        assert!(reqs(&mut rx).iter().any(|r| matches!(r, YtmReq::OpenSignInLink { .. })));
+        key(&mut app, KeyCode::Esc);
+        assert!(app.library.auth.waiting.is_none());
+    }
+
+    #[test]
+    fn sign_out_from_account_action_asks_first() {
+        let (mut app, mut rx) = app();
+        app.logged_in = true;
+        app.open_account_action();
+        let shown = screen(&mut app);
+        assert!(shown.contains("Yes, sign out"), "{shown}");
+        key(&mut app, KeyCode::Char('y'));
+        let sent = reqs(&mut rx);
+        assert!(sent.iter().any(|r| matches!(r, YtmReq::SignOut)), "{sent:?}");
     }
 
     #[test]

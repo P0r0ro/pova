@@ -5,37 +5,52 @@ get your library, liked songs, history, and the ♥ next to songs you've liked.
 
 pova signs in the same way your browser does: with your YouTube Music
 cookies. There's no OAuth app and no password prompt. You just let pova borrow
-the cookie your browser already has.
+the login your browser already has.
 
-### The easy way
+### Inside pova (easiest)
 
-If you're signed in to <https://music.youtube.com> in your browser:
+1. Open the **Library** tab (`b`), or click **○ signed out** in the player border.
+2. If you aren't signed in yet, open `https://music.youtube.com` (Shift+click / click the link or press `o`) and sign in with Google.
+3. Pick your browser profile (e.g. **Brave — Personal**, **Chrome — Work**, **Firefox**) and press **Enter** (or click it).
+
+pova reads your local browser profile names (`Local State` for Brave/Chrome/Chromium/Edge/Vivaldi, `profiles.ini` for Firefox) without touching any cookie database until you choose one. If the profile you picked isn't signed in yet, pova opens `https://music.youtube.com` in that profile and waits until you finish signing in.
+
+Under the hood, pova reads only the `youtube.com` cookies through `yt-dlp` and
+saves them to `~/.config/pova/cookie.txt` (mode `600`). On KDE/GNOME, your
+desktop keyring may ask to unlock Chromium/Brave/Chrome cookies.
+
+Need a custom browser path or keyring override? Press `p` (or click **other profile (p)**) and enter something like `brave+kwallet:Profile 2`.
+
+To sign out again, open the Esc menu and choose **Sign out** (or click
+**● signed in**).
+
+### From the terminal
 
 ```sh
-./scripts/import-cookie.sh chrome     # or firefox, chromium, brave, edge, vivaldi, opera
+pova login                        # auto-detects your browser
+pova login chrome                 # or firefox, chromium, brave, edge, vivaldi, opera
+pova login "chrome:Profile 2"     # a specific browser profile
+pova logout                       # remove the saved cookie
 ```
 
-It asks yt-dlp to read your browser's cookie store (on KDE, Chrome's cookies
-are unlocked through KWallet), keeps only the youtube.com cookies, and writes
-them as a single line to `~/.config/pova/cookie.txt` with permissions `600`.
-It never prints the cookie values. To use a specific browser profile, write
-`chrome:Profile 2`.
+If pova is already running, it picks up the sign-in (or sign-out) within a
+couple of seconds, no restart needed. (The standalone `pova-import-cookie` /
+`./scripts/import-cookie.sh` script also still works.)
 
-### The manual way
+### Manual paste
+
+If your browser isn't supported by `yt-dlp`:
 
 1. Open <https://music.youtube.com> in your browser while signed in.
 2. Open DevTools, go to **Network**, and click any request to `music.youtube.com`.
 3. Copy the full value of the **Cookie** request header.
-4. Paste it on one line into `~/.config/pova/cookie.txt`, then run
-   `chmod 600 ~/.config/pova/cookie.txt`.
-
-Within a couple of seconds the bottom of the player box says **● signed in**.
-pova notices the new cookie by itself, even while it's running.
+4. In pova's **Library** tab, pick **Paste cookie manually…** and paste it
+   (pova masks the value and saves `~/.config/pova/cookie.txt` with mode `600`).
 
 **Treat `cookie.txt` like a password.** It grants access to your Google
-account. It stays on your machine and pova only sends it to YouTube Music. Google
-replaces these cookies now and then. When that happens pova switches to
-"○ signed out" and shows a message saying so: run the script again and pova
-signs back in on its own, no restart needed.
+account. It stays on your machine and pova only sends it to YouTube Music.
+Google replaces these cookies now and then. When that happens pova switches to
+"○ signed out" and tells you: pick your browser in the Library tab (or run
+`pova login`) to sign back in.
 
 Back to the [README](../README.md).

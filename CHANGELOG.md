@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **One-click browser profile sign-in and `pova login` / `pova logout`.** The
+  Library tab now shows the `https://music.youtube.com` link right away along
+  with every installed browser profile by name (including multiple Brave,
+  Chrome, Chromium, Edge, Vivaldi, and Firefox profiles) instead of manual
+  DevTools instructions. Picking a profile signs in immediately or opens
+  `music.youtube.com` in that profile and polls until you finish signing in
+  with Google. Also adds custom profile input (`p`), masked manual paste (`c`),
+  `Sign in` / `Sign out` in the Esc menu, clickable login status in the player
+  border, and `pova login` / `pova logout` CLI commands without `python3`.
+
 ## 1.2.2 — Catppuccin themes
 
 - **Catppuccin, built in.** Latte, Frappé, Macchiato and Mocha are in the
