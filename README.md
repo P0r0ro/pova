@@ -61,7 +61,7 @@ kitty shows real album art (other terminals get a blocky version).
 | [crates.io](#from-cratesio-or-source) | Rust users, other CPU architectures | no |
 
 Every file is on the [latest release](https://github.com/P0r0ro/pova/releases/latest)
-page, with a `.sha256` checksum next to it. The commands below use version 1.2.3.
+page, with a `.sha256` checksum next to it. The commands below use version 1.2.4.
 
 **Coming soon:** the Arch AUR package (`yay -S pova-bin`). It's built and
 tested, and waits on an account.
@@ -102,7 +102,7 @@ own key.
 own repositories. pova also shows up in your app menu.
 
 ```sh
-sudo dnf install https://github.com/P0r0ro/pova/releases/download/v1.2.3/pova-1.2.3-1.x86_64.rpm
+sudo dnf install https://github.com/P0r0ro/pova/releases/download/v1.2.4/pova-1.2.4-1.x86_64.rpm
 ```
 
 ### Debian and Ubuntu (.deb)
@@ -111,8 +111,8 @@ sudo dnf install https://github.com/P0r0ro/pova/releases/download/v1.2.3/pova-1.
 up in your app menu.
 
 ```sh
-curl -LO https://github.com/P0r0ro/pova/releases/download/v1.2.3/pova_1.2.3-1_amd64.deb
-sudo apt install ./pova_1.2.3-1_amd64.deb
+curl -LO https://github.com/P0r0ro/pova/releases/download/v1.2.4/pova_1.2.4-1_amd64.deb
+sudo apt install ./pova_1.2.4-1_amd64.deb
 ```
 
 On older releases such as Ubuntu 22.04, the distro's yt-dlp is often too old
@@ -124,9 +124,9 @@ One file that runs on any distro. You install pova's helpers yourself
 ([see below](#the-helpers-pova-needs)).
 
 ```sh
-curl -LO https://github.com/P0r0ro/pova/releases/download/v1.2.3/pova-v1.2.3-x86_64.AppImage
-chmod +x pova-v1.2.3-x86_64.AppImage
-./pova-v1.2.3-x86_64.AppImage
+curl -LO https://github.com/P0r0ro/pova/releases/download/v1.2.4/pova-v1.2.4-x86_64.AppImage
+chmod +x pova-v1.2.4-x86_64.AppImage
+./pova-v1.2.4-x86_64.AppImage
 ```
 
 ### Prebuilt binary
@@ -135,9 +135,9 @@ A plain binary plus the sign-in helper. You install pova's helpers yourself
 ([see below](#the-helpers-pova-needs)).
 
 ```sh
-curl -LO https://github.com/P0r0ro/pova/releases/download/v1.2.3/pova-v1.2.3-x86_64-linux.tar.gz
-tar xzf pova-v1.2.3-x86_64-linux.tar.gz
-install -Dm755 pova-v1.2.3-x86_64-linux/pova ~/.local/bin/pova
+curl -LO https://github.com/P0r0ro/pova/releases/download/v1.2.4/pova-v1.2.4-x86_64-linux.tar.gz
+tar xzf pova-v1.2.4-x86_64-linux.tar.gz
+install -Dm755 pova-v1.2.4-x86_64-linux/pova ~/.local/bin/pova
 ```
 
 ### From crates.io or source
@@ -152,7 +152,7 @@ cargo install pova
 Or build straight from GitHub:
 
 ```sh
-cargo install --git https://github.com/P0r0ro/pova --tag v1.2.3
+cargo install --git https://github.com/P0r0ro/pova --tag v1.2.4
 ```
 
 ### The helpers pova needs
