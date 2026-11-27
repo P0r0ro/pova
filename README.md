@@ -61,7 +61,7 @@ kitty shows real album art (other terminals get a blocky version).
 | [crates.io](#from-cratesio-or-source) | Rust users, other CPU architectures | no |
 
 Every file is on the [latest release](https://github.com/P0r0ro/pova/releases/latest)
-page, with a `.sha256` checksum next to it. The commands below use version 1.2.4.
+page, with a `.sha256` checksum next to it. The commands below use version 1.3.0.
 
 **Coming soon:** the Arch AUR package (`yay -S pova-bin`). It's built and
 tested, and waits on an account.
@@ -102,7 +102,7 @@ own key.
 own repositories. pova also shows up in your app menu.
 
 ```sh
-sudo dnf install https://github.com/P0r0ro/pova/releases/download/v1.2.4/pova-1.2.4-1.x86_64.rpm
+sudo dnf install https://github.com/P0r0ro/pova/releases/download/v1.3.0/pova-1.3.0-1.x86_64.rpm
 ```
 
 ### Debian and Ubuntu (.deb)
@@ -111,8 +111,8 @@ sudo dnf install https://github.com/P0r0ro/pova/releases/download/v1.2.4/pova-1.
 up in your app menu.
 
 ```sh
-curl -LO https://github.com/P0r0ro/pova/releases/download/v1.2.4/pova_1.2.4-1_amd64.deb
-sudo apt install ./pova_1.2.4-1_amd64.deb
+curl -LO https://github.com/P0r0ro/pova/releases/download/v1.3.0/pova_1.3.0-1_amd64.deb
+sudo apt install ./pova_1.3.0-1_amd64.deb
 ```
 
 On older releases such as Ubuntu 22.04, the distro's yt-dlp is often too old
@@ -124,9 +124,9 @@ One file that runs on any distro. You install pova's helpers yourself
 ([see below](#the-helpers-pova-needs)).
 
 ```sh
-curl -LO https://github.com/P0r0ro/pova/releases/download/v1.2.4/pova-v1.2.4-x86_64.AppImage
-chmod +x pova-v1.2.4-x86_64.AppImage
-./pova-v1.2.4-x86_64.AppImage
+curl -LO https://github.com/P0r0ro/pova/releases/download/v1.3.0/pova-v1.3.0-x86_64.AppImage
+chmod +x pova-v1.3.0-x86_64.AppImage
+./pova-v1.3.0-x86_64.AppImage
 ```
 
 ### Prebuilt binary
@@ -135,9 +135,9 @@ A plain binary plus the sign-in helper. You install pova's helpers yourself
 ([see below](#the-helpers-pova-needs)).
 
 ```sh
-curl -LO https://github.com/P0r0ro/pova/releases/download/v1.2.4/pova-v1.2.4-x86_64-linux.tar.gz
-tar xzf pova-v1.2.4-x86_64-linux.tar.gz
-install -Dm755 pova-v1.2.4-x86_64-linux/pova ~/.local/bin/pova
+curl -LO https://github.com/P0r0ro/pova/releases/download/v1.3.0/pova-v1.3.0-x86_64-linux.tar.gz
+tar xzf pova-v1.3.0-x86_64-linux.tar.gz
+install -Dm755 pova-v1.3.0-x86_64-linux/pova ~/.local/bin/pova
 ```
 
 ### From crates.io or source
@@ -152,7 +152,7 @@ cargo install pova
 Or build straight from GitHub:
 
 ```sh
-cargo install --git https://github.com/P0r0ro/pova --tag v1.2.4
+cargo install --git https://github.com/P0r0ro/pova --tag v1.3.0
 ```
 
 ### The helpers pova needs
@@ -234,6 +234,9 @@ This needs you to sign in once (next section).
 - **Even loudness**: every song plays at about the same volume, so a quiet acoustic track doesn't follow a loud one at half the level. On by default; switch it in the `esc` menu.
 - **Song-change notifications**: a desktop popup with the cover art when the song changes. Off by default; turn it on in the `esc` menu.
 - **Up next**: Now Playing shows which song comes after this one.
+- **Media keys and your desktop's media widget**: KDE, GNOME, Cinnamon, XFCE and the rest show what's playing, with play / pause, next, previous and seeking; so do media keys, the lock screen, KDE Connect and `playerctl`.
+- **Sleep timer** (`z`) and **playback speed** (`x`): stop after 15 to 90 minutes or at the end of the song, with a gentle fade; play from 0.5× to 2× with natural-sounding voices.
+- **Crossfade**: off, a smooth fade between songs, or a real overlap like a DJ, in the `esc` menu.
 - **Picks up where you left off**: quit and come back to the same queue, paused at the same second.
 - **Control it from anywhere**: `pova next`, `pova add <song>`, `pova status` and more, for keyboard shortcuts and status bars. See [docs/remote-control.md](docs/remote-control.md).
 - **Mouse support**: click tabs, buttons, list rows, the progress bar and the volume bar, and scroll anywhere.
