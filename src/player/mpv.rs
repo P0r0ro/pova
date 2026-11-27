@@ -5,6 +5,7 @@
 //! plus the preloaded next one (for gapless playback); the real queue lives in
 //! the app.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -55,6 +56,8 @@ pub enum PlayerEvent {
     /// mpv has nothing to play.
     Idle(bool),
     Buffering(bool),
+    /// Playback (re)started after a seek or at a new file.
+    Restarted,
     /// A file finished; `reason` is mpv's end-file reason (eof, error, ...).
     EndFile {
         reason: String,
@@ -72,6 +75,9 @@ pub struct MpvConfig {
     pub client_name: String,
     /// Start with [`NORMALIZE_FILTER`] on.
     pub normalize: bool,
+    /// pova's own media controls are on: keep mpv from loading the
+    /// mpv-mpris script, or desktops would show two players.
+    pub skip_mpv_mpris: bool,
 }
 
 /// Label of pova's loudness filter in mpv's `af` chain, so it can be removed
@@ -118,6 +124,15 @@ fn spawn_mpv(cfg: &MpvConfig) -> anyhow::Result<Child> {
     if cfg.normalize {
         cmd.arg(format!("--af-append={}", normalize_filter()));
     }
+    if cfg.skip_mpv_mpris
+        && let Some(scripts) = scripts_for_pova(&cfg.extra_args)
+    {
+        // Load every other script by hand, so the user's own still run.
+        cmd.arg("--load-scripts=no");
+        for s in scripts {
+            cmd.arg(format!("--scripts-append={}", s.display()));
+        }
+    }
     // yt-dlp needs a JS runtime for YouTube's signature challenges; it only
     // enables deno by default, so point it at node when that is all we have.
     if which("deno").is_none() && which("node").is_some() {
@@ -147,6 +162,110 @@ pub fn audio_client_name() -> String {
 fn is_executable(p: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     p.is_file() && p.metadata().is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+}
+
+/// mpv's config folders, highest priority first, as mpv searches them:
+/// `$MPV_HOME` (or `~/.config/mpv`, then the old `~/.mpv`), then
+/// `$XDG_CONFIG_DIRS` (default `/etc/xdg`), then `/etc/mpv`.
+fn mpv_config_dirs() -> Vec<PathBuf> {
+    let env = |k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let mut dirs = Vec::new();
+    if let Some(home) = env("MPV_HOME") {
+        dirs.push(home);
+    } else {
+        let home = env("HOME");
+        if let Some(c) = env("XDG_CONFIG_HOME").or_else(|| home.as_ref().map(|h| h.join(".config"))) {
+            dirs.push(c.join("mpv"));
+        }
+        if let Some(h) = home {
+            dirs.push(h.join(".mpv"));
+        }
+    }
+    let xdg = std::env::var("XDG_CONFIG_DIRS").ok().filter(|v| !v.is_empty());
+    for d in xdg
+        .as_deref()
+        .unwrap_or("/etc/xdg")
+        .split(':')
+        .filter(|d| !d.is_empty())
+    {
+        dirs.push(PathBuf::from(d).join("mpv"));
+    }
+    dirs.push(PathBuf::from("/etc/mpv"));
+    dirs
+}
+
+/// The user already decides which scripts load (in `mpv_args` or an
+/// mpv.conf): then pova leaves script loading alone.
+fn user_controls_scripts(extra_args: &[String], config_dirs: &[PathBuf]) -> bool {
+    let sets = |line: &str| {
+        let l = line.trim().trim_start_matches("--");
+        [
+            "load-scripts",
+            "scripts",
+            "script=",
+            "script ",
+            "config-dir",
+            "no-config",
+            "config=",
+        ]
+        .iter()
+        .any(|k| l.starts_with(k))
+    };
+    extra_args.iter().any(|a| sets(a))
+        || config_dirs
+            .iter()
+            .any(|d| std::fs::read_to_string(d.join("mpv.conf")).is_ok_and(|conf| conf.lines().any(sets)))
+}
+
+/// Whether mpv-mpris is installed where mpv would load it.
+pub fn has_mpv_mpris() -> bool {
+    let dirs: Vec<PathBuf> = mpv_config_dirs().iter().map(|d| d.join("scripts")).collect();
+    scripts_without_mpris(&dirs).is_some()
+}
+
+/// The scripts to load instead of mpv's own autoloading, so mpv-mpris stays
+/// out of pova's mpv. None (change nothing) when mpv-mpris isn't installed
+/// or the user manages scripts themselves.
+fn scripts_for_pova(extra_args: &[String]) -> Option<Vec<PathBuf>> {
+    let config = mpv_config_dirs();
+    let scripts: Vec<PathBuf> = config.iter().map(|d| d.join("scripts")).collect();
+    let keep = scripts_without_mpris(&scripts)?;
+    if user_controls_scripts(extra_args, &config) {
+        tracing::info!("mpv-mpris found, but your mpv settings choose the scripts; leaving them alone");
+        return None;
+    }
+    Some(keep)
+}
+
+/// When the mpv-mpris script (`mpris.so`, or a script or folder named
+/// `mpris`) is among the scripts mpv would load from `dirs`, the others to
+/// load instead. None when there's no mpv-mpris, so nothing changes. A name
+/// in an earlier folder hides the same name in later ones, like mpv does.
+fn scripts_without_mpris(dirs: &[PathBuf]) -> Option<Vec<PathBuf>> {
+    let mut seen = HashSet::new();
+    let mut keep = Vec::new();
+    let mut found = false;
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        let mut entries: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+        entries.sort();
+        for path in entries {
+            let Some(name) = path.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+                continue;
+            };
+            // mpv skips hidden files and editor backups too.
+            if name.starts_with('.') || name.ends_with('~') || !seen.insert(name.clone()) {
+                continue;
+            }
+            let stem = name.split('.').next().unwrap_or_default();
+            if stem == "mpris" {
+                found = true;
+            } else {
+                keep.push(path);
+            }
+        }
+    }
+    found.then_some(keep)
 }
 
 pub fn which(bin: &str) -> Option<PathBuf> {
@@ -316,6 +435,7 @@ fn handle_line(line: &str, events: &UnboundedSender<PlayerEvent>) {
                 _ => None,
             }
         }
+        "playback-restart" => Some(PlayerEvent::Restarted),
         "end-file" => Some(PlayerEvent::EndFile {
             reason: v.get("reason").and_then(Value::as_str).unwrap_or("unknown").to_string(),
             error: v.get("file_error").and_then(Value::as_str).map(str::to_string),
@@ -330,6 +450,39 @@ fn handle_line(line: &str, events: &UnboundedSender<PlayerEvent>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mpv_mpris_is_left_out_and_other_scripts_kept() {
+        // Under target/, never /tmp (a RAM disk on the maintainer's machine).
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/test-mpv-scripts");
+        let _ = std::fs::remove_dir_all(&root);
+        let (user, system) = (root.join("user"), root.join("system"));
+        for (dir, names) in [
+            (&user, &["skip.lua", ".hidden.lua", "mine"][..]),
+            (&system, &["mpris.so", "skip.lua", "other.js"][..]),
+        ] {
+            std::fs::create_dir_all(dir).unwrap();
+            for n in names {
+                std::fs::write(dir.join(n), "").unwrap();
+            }
+        }
+        let got = scripts_without_mpris(&[user.clone(), system.clone(), root.join("missing")]).unwrap();
+        // The user's skip.lua hides the system one; hidden files are skipped.
+        assert_eq!(
+            got,
+            vec![user.join("mine"), user.join("skip.lua"), system.join("other.js")]
+        );
+        // The user's own script settings win.
+        assert!(!user_controls_scripts(&[], std::slice::from_ref(&user)));
+        std::fs::write(user.join("mpv.conf"), "volume=50\nload-scripts=no\n").unwrap();
+        assert!(user_controls_scripts(&[], std::slice::from_ref(&user)));
+        assert!(user_controls_scripts(&["--scripts=/x.lua".into()], &[]));
+        assert!(!user_controls_scripts(&["--volume=50".into()], &[]));
+        // Without mpv-mpris nothing changes.
+        std::fs::remove_file(system.join("mpris.so")).unwrap();
+        assert_eq!(scripts_without_mpris(&[user, system]), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn parses_property_events() {

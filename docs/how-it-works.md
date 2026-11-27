@@ -16,6 +16,12 @@ work.
         ─(lock-free ring buffer)─► DSP thread (cavacore port) ─► bars on screen
 ```
 
+Two more sit at the edge: the remote-control socket (`pova next`) and media
+controls (MPRIS on the D-Bus session bus, for desktop media widgets and media
+keys). Both only turn requests into the same commands and hand them to App;
+neither talks to mpv itself. Media controls get a snapshot from App only when
+what they show changes, never per frame.
+
 Each specialist runs on its own and only talks through messages. A slow lyrics
 server can't freeze the visualizer, and a YouTube hiccup can't stop the music.
 

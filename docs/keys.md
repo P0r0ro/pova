@@ -29,8 +29,8 @@ word before the cursor and `ctrl+u` everything before it.
 **The Esc menu.** Like btop, pressing `esc` when there's nothing to go back
 from opens a menu with the pova logo drawn in block characters, in the logo's
 own violet-to-pink gradient. From it you pick a theme, change the visualizer
-mode, and turn autoplay, album art, even loudness and song-change
-notifications on and off. Your choices are saved.
+mode, and turn autoplay, album art, even loudness, song-change
+notifications and media controls on and off. Your choices are saved.
 
 The mouse works too: click tabs, buttons, list rows and the progress bar, and
 scroll through lists. Click or scroll the volume bar to set the volume, click

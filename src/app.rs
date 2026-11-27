@@ -307,19 +307,21 @@ pub enum MenuItem {
     AlbumArt,
     Loudness,
     Notifications,
+    MediaControls,
     Account,
     Help,
     Quit,
 }
 
 impl MenuItem {
-    pub const ALL: [MenuItem; 9] = [
+    pub const ALL: [MenuItem; 10] = [
         MenuItem::Themes,
         MenuItem::VizMode,
         MenuItem::Autoplay,
         MenuItem::AlbumArt,
         MenuItem::Loudness,
         MenuItem::Notifications,
+        MenuItem::MediaControls,
         MenuItem::Account,
         MenuItem::Help,
         MenuItem::Quit,
@@ -329,7 +331,12 @@ impl MenuItem {
     pub fn is_setting(self) -> bool {
         matches!(
             self,
-            MenuItem::VizMode | MenuItem::Autoplay | MenuItem::AlbumArt | MenuItem::Loudness | MenuItem::Notifications
+            MenuItem::VizMode
+                | MenuItem::Autoplay
+                | MenuItem::AlbumArt
+                | MenuItem::Loudness
+                | MenuItem::Notifications
+                | MenuItem::MediaControls
         )
     }
 }
@@ -454,6 +461,9 @@ pub struct Channels {
     pub art: UnboundedSender<ArtReq>,
     pub resolve: UnboundedSender<ResolveReq>,
     pub notify: UnboundedSender<crate::notify::Note>,
+    pub mpris: UnboundedSender<crate::mpris::Msg>,
+    /// Playback position for media controls, read on request.
+    pub mpris_pos: crate::mpris::Position,
 }
 
 pub struct App {
@@ -529,6 +539,17 @@ pub struct App {
     /// until then, so config.toml keeps deciding.
     picked_loudness: Option<bool>,
     picked_notifications: Option<bool>,
+    picked_media_controls: Option<bool>,
+    /// What media controls last showed, so only changes are sent.
+    mpris_last: Option<crate::mpris::Snapshot>,
+    /// mpv restarted playback (a seek): the next position goes out as
+    /// MPRIS's Seeked signal.
+    seek_pending: bool,
+    /// A new file just started: its playback-restart isn't a seek.
+    new_file: bool,
+    /// Media controls were on when mpv started (so mpv-mpris, if
+    /// installed, was left out of it).
+    media_controls_at_start: bool,
 }
 
 impl App {
@@ -546,6 +567,7 @@ impl App {
         cfg.album_art = state.album_art.unwrap_or(cfg.album_art);
         cfg.normalize_loudness = state.normalize_loudness.unwrap_or(cfg.normalize_loudness);
         cfg.notifications = state.notifications.unwrap_or(cfg.notifications);
+        cfg.media_controls = state.media_controls.unwrap_or(cfg.media_controls);
         let theme_name = state.theme.clone().unwrap_or_else(|| cfg.theme.clone());
         let theme = theme::load_named(&paths.config_dir, &theme_name, cfg.theme_background);
         let volume = state.volume.unwrap_or(cfg.volume).min(100) as f64;
@@ -610,6 +632,11 @@ impl App {
             skip_disliked: None,
             picked_loudness: state.normalize_loudness,
             picked_notifications: state.notifications,
+            picked_media_controls: state.media_controls,
+            mpris_last: None,
+            seek_pending: false,
+            new_file: false,
+            media_controls_at_start: cfg.media_controls,
             cfg,
             paths,
         }
@@ -659,6 +686,7 @@ impl App {
             MenuItem::AlbumArt => format!("Album art      ‹ {} ›", on_off(self.cfg.album_art)),
             MenuItem::Loudness => format!("Even loudness  ‹ {} ›", on_off(self.cfg.normalize_loudness)),
             MenuItem::Notifications => format!("Notifications  ‹ {} ›", on_off(self.cfg.notifications)),
+            MenuItem::MediaControls => format!("Media controls ‹ {} ›", on_off(self.cfg.media_controls)),
             MenuItem::Account => if self.logged_in { "Sign out" } else { "Sign in" }.into(),
             MenuItem::Help => "Help".into(),
             MenuItem::Quit => "Quit".into(),
@@ -684,6 +712,29 @@ impl App {
                 }
                 self.cfg.notifications = !self.cfg.notifications;
                 self.picked_notifications = Some(self.cfg.notifications);
+                self.save_state();
+            }
+            MenuItem::MediaControls => {
+                self.cfg.media_controls = !self.cfg.media_controls;
+                self.picked_media_controls = Some(self.cfg.media_controls);
+                self.seek_pending = false;
+                let on = self.cfg.media_controls;
+                if on && !crate::mpris::session_bus_available() {
+                    self.flash(crate::mpris::NO_SESSION, true);
+                } else if on != self.media_controls_at_start && crate::player::mpv::has_mpv_mpris() {
+                    // Which mpv loads mpv-mpris is decided when mpv starts.
+                    self.flash(
+                        if on {
+                            "Media controls on. Restart pova to hide the second \"mpv\" player your desktop may show."
+                        } else {
+                            "Media controls off. Restart pova to get mpv-mpris's media controls back."
+                        },
+                        false,
+                    );
+                }
+                self.mpris_last = None;
+                let _ = self.tx.mpris.send(crate::mpris::Msg::Enable(self.cfg.media_controls));
+                self.sync_mpris();
                 self.save_state();
             }
             MenuItem::VizMode => {
@@ -769,6 +820,7 @@ impl App {
             album_art: Some(self.cfg.album_art),
             normalize_loudness: self.picked_loudness,
             notifications: self.picked_notifications,
+            media_controls: self.picked_media_controls,
         }
         .save(&self.paths.state_file());
     }
@@ -1063,6 +1115,69 @@ impl App {
         let _ = self.tx.notify.send(note);
     }
 
+    /// What the desktop's media controls should show.
+    fn mpris_snapshot(&self) -> crate::mpris::Snapshot {
+        use crate::mpris::{Snapshot, Song, Status};
+        use crate::player::queue::Repeat as R;
+        let song = self.current().map(|t| Song {
+            video_id: t.video_id.clone(),
+            title: t.title.clone(),
+            artist: t.artists.clone(),
+            album: t.album.clone(),
+            art_url: Some(t.art_url()),
+            length: if self.player.duration > 0.0 {
+                self.player.duration
+            } else {
+                t.duration.unwrap_or(0.0)
+            },
+        });
+        let status = match &song {
+            None => Status::Stopped,
+            Some(_) if self.player.paused => Status::Paused,
+            // A resumed session waits, paused, until the first play.
+            Some(_) if self.player.idle && self.load_started.is_none() => Status::Paused,
+            Some(_) => Status::Playing,
+        };
+        Snapshot {
+            song,
+            status,
+            volume: if self.player.muted { 0.0 } else { self.player.volume },
+            shuffle: self.queue.shuffle,
+            repeat: match self.queue.repeat {
+                R::Off => "None",
+                R::All => "Playlist",
+                R::One => "Track",
+            },
+        }
+    }
+
+    /// Connect media controls at startup, if they're on.
+    pub fn start_media_controls(&mut self) {
+        if self.cfg.media_controls {
+            if !crate::mpris::session_bus_available() {
+                // ssh, a TTY: nothing to connect to. Say so only in the log;
+                // the setting stays, for the next desktop session.
+                tracing::info!("media controls: no D-Bus session bus here");
+                return;
+            }
+            let _ = self.tx.mpris.send(crate::mpris::Msg::Enable(true));
+            self.sync_mpris();
+        }
+    }
+
+    /// Send media controls the current state, if it changed. Cheap: called
+    /// from the main loop only after something happened.
+    pub fn sync_mpris(&mut self) {
+        if !self.cfg.media_controls {
+            return;
+        }
+        let snap = self.mpris_snapshot();
+        if self.mpris_last.as_ref() != Some(&snap) {
+            self.mpris_last = Some(snap.clone());
+            let _ = self.tx.mpris.send(crate::mpris::Msg::State(snap));
+        }
+    }
+
     /// Fetch album art for the current track (if enabled and not shown yet).
     fn request_art(&mut self) {
         let Some(track) = self.current() else { return };
@@ -1181,6 +1296,12 @@ impl App {
             }
             PlayerEvent::TimePos(t) => {
                 self.player.time = t;
+                if self.cfg.media_controls {
+                    crate::mpris::set_position(&self.tx.mpris_pos, t);
+                    if std::mem::take(&mut self.seek_pending) {
+                        let _ = self.tx.mpris.send(crate::mpris::Msg::Seeked(t));
+                    }
+                }
                 if self.player.duration > 0.0 && self.player.duration - t <= AUTOPLAY_LEAD {
                     self.maybe_autoplay();
                 }
@@ -1209,8 +1330,14 @@ impl App {
             PlayerEvent::Volume(v) => self.player.volume = v,
             PlayerEvent::Muted(m) => self.player.muted = m,
             PlayerEvent::Buffering(b) => self.player.buffering = b,
+            // mpv restarts playback after every seek and at every new file;
+            // only seeks are MPRIS "Seeked".
+            PlayerEvent::Restarted => {
+                self.seek_pending = !std::mem::take(&mut self.new_file) && self.cfg.media_controls;
+            }
             PlayerEvent::Path(Some(path)) => {
                 self.load_started = None;
+                self.new_file = true;
                 let Some(vid) = video_id_from_url(&path).or_else(|| self.url_vid.get(&path).cloned()) else {
                     return;
                 };
@@ -1794,6 +1921,25 @@ impl App {
                 format!("ok playing the top result for “{q}”")
             }
             C::Status(format) => format!("ok {}", self.status_line(&format)),
+            C::Shuffle(on) => {
+                if self.queue.shuffle != on {
+                    self.dispatch(Action::Shuffle);
+                }
+                "ok".into()
+            }
+            C::Repeat(r) => {
+                use crate::player::queue::Repeat as R;
+                let r = match r.as_str() {
+                    "off" => R::Off,
+                    "all" => R::All,
+                    "one" => R::One,
+                    other => return format!("error `{other}` isn't a repeat mode; use off, all or one"),
+                };
+                if self.queue.repeat != r {
+                    self.set_repeat(r);
+                }
+                "ok".into()
+            }
         }
     }
 
@@ -3236,6 +3382,8 @@ mod search_tests {
                 art: a,
                 resolve: unbounded_channel().0,
                 notify: unbounded_channel().0,
+                mpris: unbounded_channel().0,
+                mpris_pos: Default::default(),
             },
             None,
             None,
@@ -3542,6 +3690,8 @@ mod resolve_tests {
             art: unbounded_channel().0,
             resolve: r,
             notify: unbounded_channel().0,
+            mpris: unbounded_channel().0,
+            mpris_pos: Default::default(),
         };
         let app = App::new(Config::default(), paths, State::default(), keymap, channels, None, None);
         Harness {
@@ -3747,6 +3897,8 @@ mod resolve_tests {
             art: unbounded_channel().0,
             resolve: unbounded_channel().0,
             notify: n,
+            mpris: unbounded_channel().0,
+            mpris_pos: Default::default(),
         };
         let cfg = Config {
             notifications: true,
@@ -4066,6 +4218,8 @@ mod playlist_tests {
             art: unbounded_channel().0,
             resolve: unbounded_channel().0,
             notify: unbounded_channel().0,
+            mpris: unbounded_channel().0,
+            mpris_pos: Default::default(),
         };
         let cfg = Config {
             resume: false,

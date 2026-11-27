@@ -22,7 +22,6 @@ Requires:       yt-dlp
 Requires:       pipewire-utils
 Recommends:     nodejs
 Recommends:     python3
-Recommends:     mpv-mpris
 Recommends:     btop
 Recommends:     libnotify
 

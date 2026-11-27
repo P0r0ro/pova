@@ -81,6 +81,33 @@ pub(crate) async fn load(http: &reqwest::Client, url: &str, path: PathBuf) -> an
     Ok(img)
 }
 
+/// The cover as a small PNG in `out`, for desktop notifications and media
+/// widgets (from the art cache, downloading it if needed). None if it can't
+/// be had within a few seconds.
+pub(crate) async fn cover_png(
+    http: &reqwest::Client,
+    art_dir: &std::path::Path,
+    url: &str,
+    out: &std::path::Path,
+) -> Option<PathBuf> {
+    let cache = art_dir.join(cache_name(url));
+    let img = tokio::time::timeout(std::time::Duration::from_secs(5), load(http, url, cache))
+        .await
+        .ok()?
+        .ok()?;
+    let out = out.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let small = img.thumbnail(256, 256);
+        let tmp = out.with_extension("png.tmp");
+        small.save_with_format(&tmp, image::ImageFormat::Png).ok()?;
+        std::fs::rename(&tmp, &out).ok()?;
+        Some(out)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// Centre-crop to a square (video thumbnails are 4:3/16:9) and cap the size.
 fn square(img: DynamicImage) -> DynamicImage {
     let img = trim_letterbox(img);

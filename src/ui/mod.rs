@@ -612,6 +612,8 @@ mod tests {
                 art: a,
                 resolve: unbounded_channel().0,
                 notify: unbounded_channel().0,
+                mpris: unbounded_channel().0,
+                mpris_pos: Default::default(),
             },
             None,
             None,

@@ -80,7 +80,8 @@ debug build leaves about 2 GB of output.
 
 - `src/`: `app.rs` (state + reducer), `ytm.rs` (YouTube Music actor),
   `player/` (mpv, queue), `viz/` (capture, cava port, render), `ui/`,
-  `control.rs` (remote control socket), `config.rs` (config, state, session).
+  `control.rs` (remote control socket), `mpris.rs` (desktop media controls),
+  `notify.rs` (song-change popups), `config.rs` (config, state, session).
 - `scripts/`: `check.sh`, `release.sh`, `test-packages.sh`, `import-cookie.sh`,
   `apt-repo.sh` (the apt repository on GitHub Pages, published by `apt.yml`).
 - `packaging/`: AppImage desktop entry and icon, COPR spec, AUR PKGBUILD.
