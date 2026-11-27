@@ -530,11 +530,7 @@ fn chips<T: Copy + PartialEq>(
         spans.push(Span::styled(text, style));
         spans.push(Span::raw(" "));
     }
-    let hint = format!(
-        "{}/{}",
-        app.keymap.hint(Action::SubPrev),
-        app.keymap.hint(Action::SubNext)
-    );
+    let hint = app.keymap.either(Action::SubPrev, Action::SubNext);
     spans.push(Span::styled(hint, Style::new().fg(t.inactive_fg)));
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }

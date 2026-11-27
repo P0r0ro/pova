@@ -300,12 +300,26 @@ impl Keymap {
             .filter(|(_, a)| **a == action)
             .map(|(k, _)| k.display())
             .collect();
-        keys.sort_by_key(|k| (k.chars().count(), k.clone()));
+        // Arrows first (the seek hint reads "← or →", not ", or ."), then
+        // the shortest.
+        let arrow = |k: &str| k.starts_with(['←', '→', '↑', '↓']);
+        keys.sort_by_key(|k| (!arrow(k), k.chars().count(), k.clone()));
         keys
     }
 
     pub fn hint(&self, action: Action) -> String {
         self.keys_for(action).into_iter().next().unwrap_or_else(|| "-".into())
+    }
+
+    /// Hint for a pair of actions, like "[ or ]". A slash ("[/]", "</>")
+    /// reads as one odd key, so the keys are spelled out with "or". An
+    /// unbound action is left out.
+    pub fn either(&self, a: Action, b: Action) -> String {
+        match (self.keys_for(a).into_iter().next(), self.keys_for(b).into_iter().next()) {
+            (Some(a), Some(b)) => format!("{a} or {b}"),
+            (Some(k), None) | (None, Some(k)) => k,
+            (None, None) => "-".into(),
+        }
     }
 }
 
@@ -335,6 +349,19 @@ mod tests {
         assert_eq!(km.action(&ev), Some(Action::TabNowPlaying));
         let ev = KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT);
         assert_eq!(km.action(&ev), Some(Action::TabPrev));
+    }
+
+    #[test]
+    fn pair_hints_say_or() {
+        let (km, _) = Keymap::new(&HashMap::new());
+        assert_eq!(km.either(Action::SubPrev, Action::SubNext), "[ or ]");
+        assert_eq!(km.either(Action::Prev, Action::Next), "< or >");
+        assert_eq!(km.either(Action::SeekBackward, Action::SeekForward), "← or →");
+        // Unbinding one of the pair leaves just the other.
+        let mut o = HashMap::new();
+        o.insert("sub_next".to_string(), vec![]);
+        let (km, _) = Keymap::new(&o);
+        assert_eq!(km.either(Action::SubPrev, Action::SubNext), "[");
     }
 
     #[test]

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- **Clearer key hints.** Pairs of keys now read "[ or ]", "< or > track"
+  and "← or → seek" instead of "[/]", "</>" and ",/.", which looked like a
+  single odd key. In a narrow controls box, the less important hints are
+  dropped instead of being cut off.
+
 ## 1.2.4 — queue refill fix, radio from the playing song
 
 - **Fixed: nothing played after clearing the queue.** With autoplay on, `C`

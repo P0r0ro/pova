@@ -507,15 +507,20 @@ fn draw_controls(f: &mut Frame, app: &mut App, area: Rect) {
             String::new()
         };
         let k = |a| app.keymap.hint(a);
-        let hints = format!(
-            "{time}   {} play  {}/{} track  {}/{} seek  {} help",
-            k(Action::PlayPause),
-            k(Action::Prev),
-            k(Action::Next),
-            k(Action::SeekBackward),
-            k(Action::SeekForward),
-            k(Action::Help)
-        );
+        let either = |a, b| app.keymap.either(a, b);
+        let mut parts = vec![
+            format!("{} play", k(Action::PlayPause)),
+            format!("{} track", either(Action::Prev, Action::Next)),
+            format!("{} seek", either(Action::SeekBackward, Action::SeekForward)),
+            format!("{} help", k(Action::Help)),
+        ];
+        // In a narrow box, drop seek, then track, rather than cut a hint
+        // off; "help" stays so the full list is always one key away.
+        let line = |parts: &[String]| format!("{time}   {}", parts.join("  "));
+        while parts.len() > 2 && Span::raw(line(&parts)).width() > inner.width as usize {
+            parts.remove(parts.len() - 2);
+        }
+        let hints = line(&parts);
         f.render_widget(
             Paragraph::new(hints)
                 .alignment(Alignment::Center)
@@ -558,6 +563,9 @@ mod tests {
         let np = screen(&mut app);
         assert!(np.contains("up next"), "no up-next line");
         assert!(np.contains("number 4"), "up next shows the wrong song");
+        assert!(np.contains("< or > track"), "pair hints use \"or\"");
+        assert!(np.contains("? help"), "help hint dropped");
+        assert!(!np.contains("</>"));
 
         app.overlay = Some(Overlay::Menu {
             state: Default::default(),
