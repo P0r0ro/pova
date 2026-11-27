@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Sleep timer** (`z`): pause after 15 to 90 minutes, or at the end of the
+  current song. The volume eases down over the last ten seconds first, and
+  is back to normal when you press play again. The time left shows on the
+  Now Playing line.
+- **Playback speed** (`x`): 0.5× to 2×, with voices kept at their natural
+  pitch. Desktop media widgets follow the speed too.
 - **Media controls.** pova now appears as a media player on your desktop:
   the media widget in KDE's panel, GNOME's top bar, Cinnamon, XFCE and
   others, plus media keys, the lock screen, KDE Connect, waybar and

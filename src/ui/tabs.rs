@@ -203,18 +203,41 @@ pub fn now_playing(f: &mut Frame, app: &mut App, area: Rect) {
             .current
             .map(|c| format!("{}/{}", c + 1, app.queue.len()))
             .unwrap_or_default();
-        let line_spans = vec![
+        let mut parts = vec![
             Span::styled(vol, Style::new().fg(t.graph_text)),
-            Span::raw("   "),
             Span::styled("⇄ shuffle", if app.queue.shuffle { lit } else { dim }),
-            Span::raw("   "),
             Span::styled(
                 format!("↻ {}", app.queue.repeat.label()),
                 if app.queue.repeat != Repeat::Off { lit } else { dim },
             ),
-            Span::raw("   "),
             Span::styled(pos, Style::new().fg(t.graph_text)),
         ];
+        // Only while they're in use: speed when not 1×, the sleep countdown.
+        if app.speed != 1.0 {
+            parts.push(Span::styled(crate::picker::speed_label(app.speed), lit));
+        }
+        if let Some(sleep) = app.sleep {
+            parts.push(Span::styled(sleep.badge(std::time::Instant::now()), lit));
+        }
+        // Narrow box: tighter gaps, then leave out the queue position.
+        let width = |parts: &[Span], gap: usize| {
+            parts.iter().map(|s| s.width()).sum::<usize>() + gap * parts.len().saturating_sub(1)
+        };
+        let room = area.width as usize;
+        let mut gap = 3;
+        if width(&parts, gap) > room {
+            gap = 2;
+        }
+        if width(&parts, gap) > room {
+            parts.remove(3);
+        }
+        let mut line_spans = Vec::with_capacity(parts.len() * 2);
+        for (i, part) in parts.into_iter().enumerate() {
+            if i > 0 {
+                line_spans.push(Span::raw(" ".repeat(gap)));
+            }
+            line_spans.push(part);
+        }
         f.render_widget(
             Paragraph::new(Line::from(line_spans)).alignment(Alignment::Center),
             line(y),

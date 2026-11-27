@@ -40,6 +40,8 @@ pub enum Command {
     Shuffle(bool),
     /// Repeat "off", "all" or "one" (media controls).
     Repeat(String),
+    /// Playback speed, e.g. "1.5" (media controls).
+    Speed(String),
 }
 
 /// Default `pova status` format.
@@ -79,6 +81,7 @@ impl Command {
                 _ => return Err("`shuffle` needs on or off".into()),
             },
             "repeat" => Command::Repeat(need("off, all or one")?),
+            "speed" => Command::Speed(need("a speed like 1.5")?),
             other => return Err(format!("unknown command `{other}`")),
         })
     }
@@ -101,6 +104,7 @@ impl Command {
             Command::Status(f) => format!("status\t{f}"),
             Command::Shuffle(on) => format!("shuffle\t{}", if *on { "on" } else { "off" }),
             Command::Repeat(r) => format!("repeat\t{r}"),
+            Command::Speed(s) => format!("speed\t{s}"),
         }
     }
 }
