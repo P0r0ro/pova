@@ -9,6 +9,7 @@ mod keymap;
 mod lenient;
 mod lyrics;
 mod model;
+mod mpris;
 mod notify;
 mod player;
 mod resolve;
@@ -365,6 +366,7 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
         extra_args: cfg.mpv_args.clone(),
         client_name: client_name.clone(),
         normalize: state.normalize_loudness.unwrap_or(cfg.normalize_loudness),
+        skip_mpv_mpris: state.media_controls.unwrap_or(cfg.media_controls),
     };
     let player_task = tokio::spawn(mpv::run(mpv_cfg, player_cmd_rx, player_ev_tx));
 
@@ -383,6 +385,8 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
     // Remote control (`pova next` etc.).
     let control_socket = control::socket_path(&paths.runtime_dir);
     let (control_tx, mut control_rx) = unbounded_channel::<control::Request>();
+    // Media controls (MPRIS) send their commands down the same channel.
+    let mpris_control = control_tx.clone();
     let control_owned = match control::bind(&control_socket) {
         Some(listener) => {
             tokio::spawn(control::serve(listener, control_tx));
@@ -432,6 +436,17 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
         notify_rx,
     ));
 
+    // Media controls: one task, connected to the session bus only while on.
+    let (mpris_tx, mpris_rx) = unbounded_channel();
+    let mpris_pos = mpris::Position::default();
+    tokio::spawn(mpris::run(
+        paths.cache_dir.join("art"),
+        paths.cache_dir.clone(),
+        mpris_pos.clone(),
+        mpris_rx,
+        mpris_control,
+    ));
+
     let channels = Channels {
         player: player_tx.clone(),
         ytm: ytm_tx,
@@ -439,12 +454,15 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
         art: art_tx,
         resolve: resolve_tx,
         notify: notify_tx,
+        mpris: mpris_tx,
+        mpris_pos,
     };
     let mut app = App::new(cfg, paths, state, keymap, channels, picker, art_proto);
     app.cat_art = cat_proto;
     for w in key_warnings {
         app.flash(w, true);
     }
+    app.start_media_controls();
     if app.cfg.notifications && mpv::which("notify-send").is_none() {
         app.cfg.notifications = false;
         app.flash(notify::MISSING, true);
@@ -508,6 +526,10 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
                     app.dirty = true;
                 }
                 _ = tick.tick() => {
+                    // Only after something changed, so this is skipped when idle.
+                    if app.dirty {
+                        app.sync_mpris();
+                    }
                     if viz.frames.has_changed().unwrap_or(false) {
                         app.viz_frame = viz.frames.borrow_and_update().clone();
                         if app.show_viz {

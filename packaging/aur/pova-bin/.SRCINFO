@@ -12,7 +12,6 @@ pkgbase = pova-bin
 	depends = gcc-libs
 	optdepends = nodejs: lets yt-dlp solve YouTube JavaScript challenges
 	optdepends = python: pova-import-cookie (signing in)
-	optdepends = mpv-mpris: media keys and the desktop media widget
 	optdepends = btop: about 40 extra themes
 	optdepends = libnotify: song-change notifications
 	provides = pova

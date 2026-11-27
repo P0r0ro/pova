@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Media controls.** pova now appears as a media player on your desktop:
+  the media widget in KDE's panel, GNOME's top bar, Cinnamon, XFCE and
+  others, plus media keys, the lock screen, KDE Connect, waybar and
+  `playerctl`. Play / pause, next, previous, seeking, volume, shuffle and
+  repeat all work, with the song's title, artist, album and cover. It's built
+  in (no extra program, no new process) and on by default; turn it off with
+  "Media controls" in the `esc` menu.
+- **mpv-mpris is no longer needed** or suggested by the packages. If you
+  have it, pova keeps it out of its own mpv so you don't see pova twice. If
+  your package manager installed it only for pova, `sudo apt autoremove` or
+  `sudo dnf autoremove` will offer to remove it.
 - **Clearer key hints.** Pairs of keys now read "[ or ]", "< or > track"
   and "← or → seek" instead of "[/]", "</>" and ",/.", which looked like a
   single odd key. In a narrow controls box, the less important hints are

@@ -36,6 +36,10 @@ pub enum Command {
     PlayNow(String),
     /// One line of text about what's playing, from a format string.
     Status(String),
+    /// Shuffle on or off (media controls).
+    Shuffle(bool),
+    /// Repeat "off", "all" or "one" (media controls).
+    Repeat(String),
 }
 
 /// Default `pova status` format.
@@ -69,6 +73,12 @@ impl Command {
             "play-next" => Command::PlayNext(need("a search query")?),
             "play-now" => Command::PlayNow(need("a search query")?),
             "status" => Command::Status(if arg.is_empty() { STATUS_FORMAT.into() } else { arg }),
+            "shuffle" => match arg.as_str() {
+                "on" => Command::Shuffle(true),
+                "off" => Command::Shuffle(false),
+                _ => return Err("`shuffle` needs on or off".into()),
+            },
+            "repeat" => Command::Repeat(need("off, all or one")?),
             other => return Err(format!("unknown command `{other}`")),
         })
     }
@@ -89,6 +99,8 @@ impl Command {
             Command::PlayNext(q) => format!("play-next\t{q}"),
             Command::PlayNow(q) => format!("play-now\t{q}"),
             Command::Status(f) => format!("status\t{f}"),
+            Command::Shuffle(on) => format!("shuffle\t{}", if *on { "on" } else { "off" }),
+            Command::Repeat(r) => format!("repeat\t{r}"),
         }
     }
 }
@@ -202,6 +214,8 @@ mod tests {
             Command::Volume("+5".into()),
             Command::Add("seether fine again".into()),
             Command::Status("{title}".into()),
+            Command::Shuffle(false),
+            Command::Repeat("all".into()),
         ] {
             assert_eq!(Command::parse(&c.line()), Ok(c));
         }

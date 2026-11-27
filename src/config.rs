@@ -154,6 +154,8 @@ pub struct Config {
     pub normalize_loudness: bool,
     /// Desktop notification with the cover art when the song changes.
     pub notifications: bool,
+    /// Media controls (MPRIS): desktop media widgets, media keys, playerctl.
+    pub media_controls: bool,
     /// Action name -> key(s), e.g. `next = ["N", "ctrl+right"]`.
     pub keys: HashMap<String, Vec<String>>,
     pub viz: VizConfig,
@@ -173,6 +175,7 @@ impl Default for Config {
             resume: true,
             normalize_loudness: true,
             notifications: false,
+            media_controls: true,
             keys: HashMap::new(),
             viz: VizConfig::default(),
         }
@@ -251,6 +254,7 @@ pub struct State {
     pub album_art: Option<bool>,
     pub normalize_loudness: Option<bool>,
     pub notifications: Option<bool>,
+    pub media_controls: Option<bool>,
 }
 
 impl State {

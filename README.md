@@ -172,7 +172,6 @@ sudo pacman -S mpv yt-dlp pipewire-audio nodejs          # Arch
 | `nodejs` or `deno` | lets yt-dlp solve YouTube's JavaScript challenge |
 | `pw-record`, `pw-dump` (PipeWire tools) | capturing pova's audio for the visualizer |
 | `btop` (optional) | about 40 extra themes |
-| `mpv-mpris` (optional) | media keys and your desktop's media widget |
 
 ### Play something
 

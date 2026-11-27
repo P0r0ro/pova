@@ -47,6 +47,7 @@ tracing = "0.1.44"
 tracing-appender = "0.2.5"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 ytmapi-rs = { version = "0.3.4", default-features = false, features = ["rustls", "simplified-queries"] }
+zbus = { version = "6.5.0", default-features = false, features = ["tokio", "service"] }
 
 # ── Linux packages (built in CI by .github/workflows/release.yml) ──
 # Debian/Ubuntu: cargo deb
@@ -63,7 +64,7 @@ ported from cava, synced lyrics, album art, a queue, likes and every btop theme.
 # for the visualizer. nodejs/deno lets yt-dlp solve YouTube's JS challenge;
 # python3 is used by pova-import-cookie.
 depends = "$auto, mpv, yt-dlp, pipewire-bin"
-recommends = "nodejs | deno, python3, mpv-mpris, btop, libnotify-bin"
+recommends = "nodejs | deno, python3, btop, libnotify-bin"
 assets = [
     ["target/release/pova", "usr/bin/", "755"],
     ["scripts/import-cookie.sh", "usr/bin/pova-import-cookie", "755"],
@@ -94,7 +95,6 @@ pipewire-utils = "*"
 [package.metadata.generate-rpm.recommends]
 nodejs = "*"
 python3 = "*"
-mpv-mpris = "*"
 btop = "*"
 libnotify = "*"
 

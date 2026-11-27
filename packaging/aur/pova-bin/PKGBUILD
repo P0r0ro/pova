@@ -11,7 +11,6 @@ depends=('mpv' 'yt-dlp' 'pipewire-audio' 'glibc' 'gcc-libs')
 optdepends=(
   'nodejs: lets yt-dlp solve YouTube JavaScript challenges'
   'python: pova-import-cookie (signing in)'
-  'mpv-mpris: media keys and the desktop media widget'
   'btop: about 40 extra themes'
   'libnotify: song-change notifications'
 )

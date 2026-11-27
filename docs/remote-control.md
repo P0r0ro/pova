@@ -45,9 +45,42 @@ bindsym $mod+p exec pova toggle
 bindsym $mod+bracketright exec pova next
 ```
 
-Media keys and the Plasma media widget already work through
-[mpv-mpris](https://github.com/hoyon/mpv-mpris); these commands add search,
-the queue and likes on top.
+Media keys and desktop media widgets work by themselves (next section);
+these commands add search, the queue and likes on top.
+
+## Media keys and desktop widgets
+
+pova shows up as a media player on your desktop, like a browser playing
+audio: the media widget in KDE's panel, GNOME's top bar and lock screen,
+Cinnamon, XFCE and others show the song and cover, and play / pause, next,
+previous, seeking, volume, shuffle and repeat work from there. So do media
+keys, KDE Connect and GSConnect on your phone, and waybar's `mpris` module.
+It's the freedesktop MPRIS standard, built into pova (no extra program); turn
+it off with "Media controls" in the `esc` menu.
+
+On a tiling window manager without a media-key daemon, bind the keys to
+[playerctl](https://github.com/altdesktop/playerctl):
+
+```
+# sway / i3
+bindsym XF86AudioPlay exec playerctl -p pova play-pause
+bindsym XF86AudioNext exec playerctl -p pova next
+bindsym XF86AudioPrev exec playerctl -p pova previous
+
+# Hyprland
+bind = , XF86AudioPlay, exec, playerctl -p pova play-pause
+bind = , XF86AudioNext, exec, playerctl -p pova next
+bind = , XF86AudioPrev, exec, playerctl -p pova previous
+```
+
+If you have mpv-mpris installed, pova keeps it out of its own mpv while media
+controls are on, so you don't see two players; your other mpv windows still
+use it. This is decided when pova starts, so after switching media controls
+in the menu, restart pova once. If your mpv.conf or `mpv_args` already choose
+which scripts load (`load-scripts`, `scripts`), pova leaves that alone.
+
+Over ssh or on a text console there's no desktop session to talk to, so media
+controls simply stay quiet there.
 
 ## Status bars
 

@@ -60,7 +60,7 @@ pub async fn run(art_dir: PathBuf, out_dir: PathBuf, mut rx: UnboundedReceiver<N
             } else {
                 "notify-cover-b.png"
             });
-            icon = cover(&http, &art_dir, url, &out).await;
+            icon = crate::art::cover_png(&http, &art_dir, url, &out).await;
         }
         // A newer song started while the cover downloaded: show that instead.
         if let Ok(n) = rx.try_recv() {
@@ -84,27 +84,6 @@ pub async fn run(art_dir: PathBuf, out_dir: PathBuf, mut rx: UnboundedReceiver<N
             Err(e) => tracing::debug!("notification: {e:#}"),
         }
     }
-}
-
-/// Cover art as a small PNG in `out`, from the art cache (downloading it if
-/// needed). None if it can't be had within a few seconds.
-async fn cover(http: &reqwest::Client, art_dir: &Path, url: &str, out: &Path) -> Option<PathBuf> {
-    let cache = art_dir.join(crate::art::cache_name(url));
-    let img = tokio::time::timeout(Duration::from_secs(5), crate::art::load(http, url, cache))
-        .await
-        .ok()?
-        .ok()?;
-    let out = out.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let small = img.thumbnail(256, 256);
-        let tmp = out.with_extension("png.tmp");
-        small.save_with_format(&tmp, image::ImageFormat::Png).ok()?;
-        std::fs::rename(&tmp, &out).ok()?;
-        Some(out)
-    })
-    .await
-    .ok()
-    .flatten()
 }
 
 /// Notification servers read the body as simple markup.

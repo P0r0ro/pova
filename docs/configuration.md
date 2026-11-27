@@ -14,6 +14,7 @@ mpv_args = []              # extra flags for mpv, if you want them
 resume = true              # start where you left off: same queue, same spot, paused
 normalize_loudness = true  # play every song at the same loudness
 notifications = false      # desktop popup with the cover art when the song changes
+media_controls = true      # desktop media widget, media keys, lock screen, playerctl
 
 [viz]
 mode = "bars"              # bars | mirror | mono | wave
@@ -33,7 +34,7 @@ next = ["N", "ctrl+right"]
 pova remembers your last theme, volume, visualizer mode, box layout and menu
 settings in `~/.local/state/pova/state.toml`.
 
-**Even loudness and notifications** can also be switched in pova's `esc`
+**Even loudness, notifications and media controls** can also be switched in pova's `esc`
 menu. What you pick there wins over `config.toml`.
 
 - `normalize_loudness` runs mpv's loudness filter (EBU R128, aiming at the
@@ -43,6 +44,11 @@ menu. What you pick there wins over `config.toml`.
 - `notifications` needs `notify-send` (the `libnotify` package; `libnotify-bin`
   on Debian and Ubuntu). Each new song replaces the previous popup, so they
   don't pile up.
+- `media_controls` lets your desktop control pova: the media widget in the
+  panel or top bar, media keys, the lock screen, KDE Connect, waybar and
+  `playerctl`. It works on every Linux desktop (it's the MPRIS standard), runs
+  inside pova (no extra program) and only shows information while it's on.
+  See [remote-control.md](remote-control.md#media-keys-and-desktop-widgets).
 
 **Themes** are looked up in `~/.config/pova/themes/`, `~/.config/btop/themes/`
 and `/usr/share/btop/themes/`. Run `pova --list-themes` to see what you have.
