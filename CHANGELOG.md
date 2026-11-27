@@ -25,6 +25,10 @@
   seconds at each song change, about 60 to 100 MB more memory while it runs;
   the menu says so. Off by default. The fades need mpv 0.38 or newer
   (Ubuntu 24.04 still ships 0.37; there songs change without the fade).
+- **Arabic, Persian and Hebrew lyrics read the right way.** Terminals draw
+  text left to right, so right-to-left lyrics came out backwards with loose
+  letters. pova now joins the letters and lays each line out right to left,
+  wrapping long lines where a reader expects.
 - **Clearer key hints.** Pairs of keys now read "[ or ]", "< or > track"
   and "← or → seek" instead of "[/]", "</>" and ",/.", which looked like a
   single odd key. In a narrow controls box, the less important hints are

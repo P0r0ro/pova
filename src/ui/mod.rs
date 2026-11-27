@@ -1,6 +1,7 @@
 //! Rendering: btop-style boxes and layout.
 
 mod banner;
+mod bidi;
 mod kitty_fix;
 mod overlay;
 mod tabs;

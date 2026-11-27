@@ -1125,10 +1125,13 @@ pub fn lyrics(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
-                track.title.clone(),
+                super::bidi::visual(&track.title),
                 Style::new().fg(t.title).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(format!(" — {}", track.artists), Style::new().fg(t.graph_text)),
+            Span::styled(
+                format!(" — {}", super::bidi::visual(&track.artists)),
+                Style::new().fg(t.graph_text),
+            ),
         ])),
         title_area,
     );
@@ -1157,7 +1160,13 @@ pub fn lyrics(f: &mut Frame, app: &mut App, area: Rect) {
             ..
         } => {
             let scroll = app.lyrics_scroll.unwrap_or(0);
-            let p = Paragraph::new(text.clone())
+            let w = body.width as usize;
+            let text: Vec<Line> = text
+                .lines()
+                .flat_map(|l| super::bidi::lines(l, w))
+                .map(Line::from)
+                .collect();
+            let p = Paragraph::new(text)
                 .wrap(Wrap { trim: false })
                 .alignment(Alignment::Center)
                 .style(Style::new().fg(t.main_fg))
@@ -1185,8 +1194,12 @@ pub fn lyrics(f: &mut Frame, app: &mut App, area: Rect) {
                     Some(a) if i < a => Style::new().fg(t.inactive_fg),
                     _ => Style::new().fg(t.main_fg),
                 };
-                row += rows_of(&content);
-                text.push(Line::styled(content, style));
+                // Right-to-left lines (Arabic, Hebrew) come pre-wrapped and
+                // in display order; others are wrapped by the paragraph.
+                for piece in super::bidi::lines(&content, w) {
+                    row += rows_of(&piece);
+                    text.push(Line::styled(piece, style));
+                }
             }
             let auto = active_row.saturating_sub(body.height / 2);
             app.lyrics_auto = auto;
