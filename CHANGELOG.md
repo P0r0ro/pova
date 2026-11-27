@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Arabic, Persian and Hebrew lyrics read the right way.** Terminals draw
+  text left to right, so right-to-left lyrics came out backwards with loose
+  letters. pova now joins the letters and lays each line out right to left,
+  wrapping long lines where a reader expects.
 - **Crossfade**, in the `esc` menu: `smooth` fades each song's end out and
   the next one in (no extra cost), `overlap` plays the end of one song over
   the start of the next, like a DJ. Overlap starts a second mpv for a few
