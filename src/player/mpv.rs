@@ -37,6 +37,8 @@ pub enum PlayerCmd {
     SetMute(bool),
     /// Loop the current file forever (repeat-one).
     SetLoopFile(bool),
+    /// Playback speed (mpv keeps the pitch).
+    SetSpeed(f64),
     /// Even out loudness between songs (adds / removes [`NORMALIZE_FILTER`]).
     SetNormalize(bool),
     Stop,
@@ -381,6 +383,7 @@ async fn run_inner(
                             send(&mut write, json!(["af", "remove", NORMALIZE_LABEL])).await?
                         }
                     }
+                    PlayerCmd::SetSpeed(s) => send(&mut write, json!(["set_property", "speed", s])).await?,
                     PlayerCmd::Stop => send(&mut write, json!(["stop"])).await?,
                     PlayerCmd::Quit => {
                         let _ = send(&mut write, json!(["quit"])).await;

@@ -359,6 +359,10 @@ pub enum Hit {
     AuthOpenBrowser,
     AuthCancel,
     CloseError,
+    /// A choice in the sleep timer / speed picker.
+    Pick(usize),
+    /// The rest of the picker strip (clicks there do nothing).
+    PickerStrip,
 }
 
 /// Clickable regions, rebuilt every frame.
@@ -550,6 +554,17 @@ pub struct App {
     /// Media controls were on when mpv started (so mpv-mpris, if
     /// installed, was left out of it).
     media_controls_at_start: bool,
+    /// The sleep timer / speed picker strip in box 2.
+    pub strip: Option<crate::picker::Picker>,
+    pub sleep: Option<crate::picker::SleepTimer>,
+    /// Last sleep choice, so the picker opens on it.
+    sleep_choice: usize,
+    /// Volume from before the sleep timer started fading.
+    sleep_fade: Option<f64>,
+    /// The sleep badge last drawn, to redraw only when it changes.
+    sleep_badge: String,
+    /// Playback speed (1 = normal); for this session only.
+    pub speed: f64,
 }
 
 impl App {
@@ -637,6 +652,12 @@ impl App {
             seek_pending: false,
             new_file: false,
             media_controls_at_start: cfg.media_controls,
+            strip: None,
+            sleep: None,
+            sleep_choice: 0,
+            sleep_fade: None,
+            sleep_badge: String::new(),
+            speed: 1.0,
             cfg,
             paths,
         }
@@ -811,7 +832,7 @@ impl App {
     pub fn save_state(&self) {
         State {
             theme: Some(self.theme.name.clone()),
-            volume: Some(self.player.volume.round() as u8),
+            volume: Some(self.sleep_fade.unwrap_or(self.player.volume).round() as u8),
             viz_mode: Some(self.viz_mode),
             show_viz: Some(self.show_viz),
             show_player: Some(self.show_player),
@@ -864,6 +885,7 @@ impl App {
                 let _ = self.tx.ytm.send(YtmReq::Suggest { query });
             }
         }
+        self.tick_sleep();
         if let Some(f) = &self.flash
             && Instant::now() > f.until
         {
@@ -1148,6 +1170,7 @@ impl App {
                 R::All => "Playlist",
                 R::One => "Track",
             },
+            rate: self.speed,
         }
     }
 
@@ -1285,6 +1308,196 @@ impl App {
         self.flash(format!("Repeat: {}", r.label()), false);
     }
 
+    // ──────────────────── sleep timer and speed picker ────────────────────
+
+    /// Open the picker strip in box 2 (pressing the same key again closes it).
+    fn open_picker(&mut self, kind: crate::picker::PickerKind) {
+        use crate::picker::{Picker, PickerKind, nearest_speed};
+        if self.strip.as_ref().is_some_and(|p| p.kind == kind) {
+            self.close_picker();
+            return;
+        }
+        let showed_player = match self.strip.take() {
+            Some(p) => p.showed_player,
+            None => !std::mem::replace(&mut self.show_player, true),
+        };
+        let idx = match kind {
+            PickerKind::Sleep => {
+                if self.sleep.is_none() {
+                    0
+                } else {
+                    self.sleep_choice
+                }
+            }
+            PickerKind::Speed => nearest_speed(self.speed),
+        };
+        self.strip = Some(Picker {
+            kind,
+            idx,
+            showed_player,
+        });
+    }
+
+    /// Box 2 is too small to draw the strip: close it rather than have it
+    /// take keys unseen.
+    pub fn picker_undrawable(&mut self) {
+        if self.strip.is_some() {
+            self.close_picker();
+            self.flash("Make the window a little taller to use this", false);
+        }
+    }
+
+    fn close_picker(&mut self) {
+        if let Some(p) = self.strip.take()
+            && p.showed_player
+        {
+            self.show_player = false;
+        }
+    }
+
+    /// Keys while the picker is open. Returns false for keys it doesn't use:
+    /// those close it and then do their usual thing.
+    fn on_picker_key(&mut self, k: KeyEvent) -> bool {
+        let Some(p) = self.strip.as_mut() else { return false };
+        let plain = !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        match k.code {
+            KeyCode::Left | KeyCode::Char('h') if plain => p.step(false),
+            KeyCode::Right | KeyCode::Char('l') if plain => p.step(true),
+            KeyCode::Enter => {
+                let idx = p.idx;
+                self.apply_pick(idx);
+            }
+            KeyCode::Esc => self.close_picker(),
+            _ => {
+                match self.keymap.action(&k) {
+                    Some(Action::SleepTimer | Action::PlaybackSpeed) => {}
+                    // Hiding box 2 hides the strip with it; don't undo that.
+                    Some(Action::TogglePlayer) => self.strip = None,
+                    _ => self.close_picker(),
+                }
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Set the picker's choice `idx` and close it.
+    fn apply_pick(&mut self, idx: usize) {
+        use crate::picker::{PickerKind, SLEEP_CHOICES, SPEEDS};
+        let Some(kind) = self.strip.as_ref().map(|p| p.kind) else {
+            return;
+        };
+        self.close_picker();
+        match kind {
+            PickerKind::Speed => self.set_speed(SPEEDS[idx.min(SPEEDS.len() - 1)]),
+            PickerKind::Sleep => {
+                let idx = idx.min(SLEEP_CHOICES.len() - 1);
+                self.set_sleep(idx);
+            }
+        }
+    }
+
+    fn set_speed(&mut self, speed: f64) {
+        self.speed = speed;
+        self.player(PlayerCmd::SetSpeed(speed));
+        self.flash(format!("Speed: {}", crate::picker::speed_label(speed)), false);
+    }
+
+    fn set_sleep(&mut self, idx: usize) {
+        use crate::picker::{SLEEP_CHOICES, Sleep, SleepTimer};
+        self.end_sleep_fade();
+        let choice = SLEEP_CHOICES[idx];
+        self.sleep_choice = idx;
+        self.sleep = SleepTimer::start(choice, Instant::now());
+        self.flash(
+            match choice {
+                Sleep::Off => "Sleep timer off".to_string(),
+                Sleep::Minutes(m) => format!("Sleep timer: pausing in {m} minutes"),
+                Sleep::EndOfSong => "Sleep timer: pausing at the end of this song".to_string(),
+            },
+            false,
+        );
+    }
+
+    /// Put the volume back after a sleep fade.
+    fn end_sleep_fade(&mut self) {
+        if let Some(v) = self.sleep_fade.take() {
+            self.player.volume = v;
+            self.player(PlayerCmd::SetVolume(v));
+        }
+    }
+
+    /// The user set the volume during the sleep fade: they're still
+    /// listening, so the timer is off and their volume stays.
+    fn volume_by_user(&mut self) {
+        if self.sleep_fade.take().is_some() {
+            self.sleep = None;
+            self.sleep_badge.clear();
+            self.flash("Sleep timer off", false);
+        }
+    }
+
+    /// The sleep timer ran out: pause (if playing) and put the volume back.
+    fn sleep_done(&mut self) {
+        self.sleep = None;
+        self.sleep_badge.clear();
+        if !self.player.paused && !self.player.idle {
+            self.player(PlayerCmd::TogglePause);
+            self.player.paused = true;
+            self.flash("Sleep timer: paused. Good night", false);
+        } else {
+            self.flash("Sleep timer ended", false);
+        }
+        self.end_sleep_fade();
+        self.dirty = true;
+    }
+
+    /// Run the sleep timer: ease the volume down over its last seconds, then
+    /// pause and put the volume back. Called every frame; cheap.
+    fn tick_sleep(&mut self) {
+        use crate::picker::{SleepTimer, fade_gain};
+        let Some(timer) = self.sleep else { return };
+        let badge = timer.badge(Instant::now());
+        if badge != self.sleep_badge {
+            self.sleep_badge = badge;
+            self.dirty = true;
+        }
+        let playing = !self.player.paused && !self.player.idle;
+        // While a song loads, its time and length aren't known yet.
+        let loading = self.load_started.is_some() || self.player.idle;
+        let remaining = match timer {
+            SleepTimer::EndOfSong if loading => None,
+            _ => timer.remaining(Instant::now(), self.player.time, self.player.duration, self.speed),
+        };
+        // "End of song" stops a hair before the end, or mpv would already be
+        // on the next song (a missed moment is caught when the song changes).
+        let done = match timer {
+            SleepTimer::At(_) => remaining.is_some_and(|r| r <= 0.0),
+            SleepTimer::EndOfSong => remaining.is_some_and(|r| r <= 0.5),
+        };
+        if done {
+            self.sleep_done();
+            return;
+        }
+        // Paused: full volume back for whenever playback resumes.
+        let Some(r) = remaining.filter(|_| playing) else {
+            self.end_sleep_fade();
+            return;
+        };
+        let gain = fade_gain(r);
+        if gain >= 1.0 {
+            // Skipped, or seeked back out of the last seconds.
+            self.end_sleep_fade();
+            return;
+        }
+        let base = *self.sleep_fade.get_or_insert(self.player.volume);
+        let target = (base * gain).round();
+        if (target - self.player.volume).abs() >= 1.0 {
+            self.player.volume = target;
+            self.player(PlayerCmd::SetVolume(target));
+        }
+    }
+
     // ───────────────────────────── events ─────────────────────────────
 
     pub fn on_player(&mut self, ev: PlayerEvent) {
@@ -1352,6 +1565,10 @@ impl App {
                         self.queue.current = Some(i);
                         self.player.time = 0.0;
                         self.on_track_changed();
+                        // The song ended before the timer saw its last moment.
+                        if self.sleep == Some(crate::picker::SleepTimer::EndOfSong) {
+                            self.sleep_done();
+                        }
                     }
                 }
                 // Whatever was preloaded is now playing (or stale).
@@ -1887,6 +2104,7 @@ impl App {
                     return format!("error `{arg}` isn't a volume; use 40, +5 or -5");
                 };
                 let target = if relative { self.player.volume + v } else { v };
+                self.volume_by_user();
                 self.player.volume = target.clamp(0.0, 100.0).round();
                 self.player(PlayerCmd::SetVolume(self.player.volume));
                 if self.player.muted {
@@ -1921,6 +2139,13 @@ impl App {
                 format!("ok playing the top result for “{q}”")
             }
             C::Status(format) => format!("ok {}", self.status_line(&format)),
+            C::Speed(arg) => match arg.trim().parse::<f64>() {
+                Ok(v) if v.is_finite() && v > 0.0 => {
+                    self.set_speed(crate::picker::SPEEDS[crate::picker::nearest_speed(v)]);
+                    format!("ok speed {}", crate::picker::speed_label(self.speed))
+                }
+                _ => format!("error `{arg}` isn't a speed; use one like 1.5"),
+            },
             C::Shuffle(on) => {
                 if self.queue.shuffle != on {
                     self.dispatch(Action::Shuffle);
@@ -2039,6 +2264,9 @@ impl App {
         }
         if self.overlay.is_some() {
             self.on_overlay_key(k);
+            return;
+        }
+        if self.strip.is_some() && self.on_picker_key(k) {
             return;
         }
         if self.tab == Tab::Library && !self.logged_in && self.library.auth.waiting.is_some() {
@@ -2473,6 +2701,7 @@ impl App {
             Next => self.next_track(),
             Prev => self.prev_track(),
             VolumeUp | VolumeDown => {
+                self.volume_by_user();
                 let d = if action == VolumeUp { 5.0 } else { -5.0 };
                 self.player.volume = ((self.player.volume / 5.0).round() * 5.0 + d).clamp(0.0, 100.0);
                 self.player(PlayerCmd::SetVolume(self.player.volume));
@@ -2652,6 +2881,8 @@ impl App {
                 }
                 _ => {}
             },
+            SleepTimer => self.open_picker(crate::picker::PickerKind::Sleep),
+            PlaybackSpeed => self.open_picker(crate::picker::PickerKind::Speed),
             JumpToCurrent => match self.tab {
                 Tab::Lyrics => self.lyrics_scroll = None,
                 _ => {
@@ -3227,8 +3458,13 @@ impl App {
             .is_some_and(|(t, lx, ly)| t.elapsed() < Duration::from_millis(400) && lx == x && ly == y);
         self.last_click = Some((Instant::now(), x, y));
 
+        if self.strip.is_some() && !matches!(self.hits.at(x, y), Some((_, Hit::Pick(_) | Hit::PickerStrip))) {
+            self.close_picker();
+        }
         if let Some((rect, hit)) = self.hits.at(x, y) {
             match hit {
+                Hit::Pick(i) => self.apply_pick(i),
+                Hit::PickerStrip => {}
                 Hit::Tab(t) => self.set_tab(t),
                 Hit::Action(a) => self.dispatch(a),
                 Hit::Progress => {
@@ -3240,6 +3476,7 @@ impl App {
                 Hit::Volume => {
                     if rect.width > 1 {
                         let frac = ((x - rect.x) as f64 / (rect.width - 1) as f64).clamp(0.0, 1.0);
+                        self.volume_by_user();
                         self.player.volume = (frac * 100.0).round();
                         self.player(PlayerCmd::SetVolume(self.player.volume));
                         if self.player.muted {
@@ -3716,6 +3953,106 @@ mod resolve_tests {
 
     fn drain<T>(rx: &mut UnboundedReceiver<T>) -> Vec<T> {
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        app.on_terminal(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+
+    #[test]
+    fn speed_picker_sets_mpv_speed_and_keys_stay_inside_it() {
+        let mut h = harness();
+        h.app.show_player = false;
+        press(&mut h.app, KeyCode::Char('x'));
+        let p = h.app.strip.clone().expect("x opens the picker");
+        assert_eq!((p.kind, p.idx), (crate::picker::PickerKind::Speed, 2));
+        // Box 2 is shown while the picker is open.
+        assert!(h.app.show_player);
+        drain(&mut h.player);
+        // ← → move inside the picker instead of seeking.
+        press(&mut h.app, KeyCode::Right);
+        press(&mut h.app, KeyCode::Right);
+        assert!(drain(&mut h.player).is_empty());
+        press(&mut h.app, KeyCode::Enter);
+        assert!(h.app.strip.is_none());
+        assert!(!h.app.show_player, "box 2 hidden again");
+        assert_eq!(h.app.speed, 1.5);
+        assert!(matches!(drain(&mut h.player)[..], [PlayerCmd::SetSpeed(s)] if s == 1.5));
+        // The same key closes it again; esc cancels without a change.
+        press(&mut h.app, KeyCode::Char('x'));
+        press(&mut h.app, KeyCode::Char('x'));
+        assert!(h.app.strip.is_none());
+        press(&mut h.app, KeyCode::Char('x'));
+        press(&mut h.app, KeyCode::Left);
+        press(&mut h.app, KeyCode::Esc);
+        assert!(h.app.strip.is_none() && h.app.overlay.is_none());
+        assert_eq!(h.app.speed, 1.5);
+        // z switches straight to the sleep picker.
+        press(&mut h.app, KeyCode::Char('x'));
+        press(&mut h.app, KeyCode::Char('z'));
+        assert_eq!(
+            h.app.strip.as_ref().map(|p| p.kind),
+            Some(crate::picker::PickerKind::Sleep)
+        );
+    }
+
+    #[test]
+    fn sleep_timer_fades_then_pauses_and_restores_the_volume() {
+        let mut h = harness();
+        h.app.queue.replace(vec![track("a"), track("b")], 0);
+        h.app.player.idle = false;
+        h.app.player.paused = false;
+        h.app.player.volume = 80.0;
+        h.app.player.duration = 200.0;
+        h.app.player.time = 100.0;
+        // End of song (the last choice).
+        press(&mut h.app, KeyCode::Char('z'));
+        press(&mut h.app, KeyCode::Left);
+        press(&mut h.app, KeyCode::Enter);
+        assert_eq!(h.app.sleep, Some(crate::picker::SleepTimer::EndOfSong));
+        drain(&mut h.player);
+        h.app.tick();
+        assert!(drain(&mut h.player).is_empty(), "nothing happens early on");
+        // 5 s left: half the volume.
+        h.app.player.time = 195.0;
+        h.app.tick();
+        assert!(matches!(drain(&mut h.player)[..], [PlayerCmd::SetVolume(v)] if v == 40.0));
+        // Saved state keeps the volume from before the fade.
+        assert_eq!(h.app.sleep_fade, Some(80.0));
+        // At the end: pause, then the volume goes back.
+        h.app.player.time = 199.8;
+        h.app.tick();
+        let cmds = drain(&mut h.player);
+        assert!(matches!(cmds[..], [PlayerCmd::TogglePause, PlayerCmd::SetVolume(v)] if v == 80.0));
+        assert!(h.app.sleep.is_none() && h.app.player.paused);
+        assert_eq!(h.app.player.volume, 80.0);
+    }
+
+    #[test]
+    fn sleep_fade_undoes_itself_on_seek_and_yields_to_the_user() {
+        let mut h = harness();
+        h.app.queue.replace(vec![track("a"), track("b")], 0);
+        h.app.player.idle = false;
+        h.app.player.paused = false;
+        h.app.player.volume = 80.0;
+        h.app.player.duration = 200.0;
+        h.app.sleep = Some(crate::picker::SleepTimer::EndOfSong);
+        // Fading, then the user seeks back: full volume again, timer still on.
+        h.app.player.time = 195.0;
+        h.app.tick();
+        assert_eq!(h.app.player.volume, 40.0);
+        h.app.player.time = 60.0;
+        h.app.tick();
+        assert_eq!(h.app.player.volume, 80.0);
+        assert!(h.app.sleep_fade.is_none() && h.app.sleep.is_some());
+        // Fading, then the user turns it up: the timer is off, their volume stays.
+        h.app.player.time = 195.0;
+        h.app.tick();
+        h.app.dispatch(Action::VolumeUp);
+        assert!(h.app.sleep.is_none() && h.app.sleep_fade.is_none());
+        assert_eq!(h.app.player.volume, 45.0);
+        h.app.tick();
+        assert_eq!(h.app.player.volume, 45.0);
     }
 
     fn direct(id: &str) -> String {

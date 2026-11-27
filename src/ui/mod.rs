@@ -9,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 
 use crate::app::{App, Hit, HitMap, Tab};
 use crate::keymap::Action;
@@ -371,6 +371,82 @@ fn draw_player(f: &mut Frame, app: &mut App, area: Rect) {
         Tab::Search => tabs::search(f, app, inner),
         Tab::Library => tabs::library(f, app, inner),
     }
+    draw_picker(f, app, inner);
+}
+
+/// The sleep timer / speed picker: a strip across the bottom of box 2, over
+/// whatever tab is showing.
+fn draw_picker(f: &mut Frame, app: &mut App, area: Rect) {
+    let Some(p) = app.strip.clone() else { return };
+    if area.height < 4 || area.width < 20 {
+        app.picker_undrawable();
+        return;
+    }
+    let t = app.theme.clone();
+    let rect = Rect {
+        y: area.y + area.height - 3,
+        height: 3,
+        ..area
+    };
+    f.render_widget(Clear, rect);
+    let bg = Style::new().bg(t.main_bg);
+    f.render_widget(Block::new().style(bg), rect);
+    // Top rule with the title, in box 2's colour.
+    let title = format!(" {} ", p.title());
+    let rule = "─".repeat((rect.width as usize).saturating_sub(title.chars().count() + 2));
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("──", Style::new().fg(t.box_player)),
+            Span::styled(title, Style::new().fg(t.title).add_modifier(Modifier::BOLD)),
+            Span::styled(rule, Style::new().fg(t.box_player)),
+        ])),
+        Rect { height: 1, ..rect },
+    );
+    app.hits.add(rect, Hit::PickerStrip);
+    // The choices, centred; the highlighted one in the selection colours.
+    let labels = p.labels();
+    let texts: Vec<String> = labels.iter().map(|l| format!(" {l} ")).collect();
+    let total: u16 =
+        texts.iter().map(|s| Span::raw(s.as_str()).width() as u16).sum::<u16>() + texts.len().saturating_sub(1) as u16;
+    let row = rect.y + 1;
+    let mut x = rect.x + rect.width.saturating_sub(total) / 2;
+    let mut spans = vec![Span::raw(" ".repeat((x - rect.x) as usize))];
+    for (i, text) in texts.into_iter().enumerate() {
+        let w = Span::raw(text.as_str()).width() as u16;
+        let style = if i == p.idx {
+            Style::new()
+                .fg(t.selected_fg)
+                .bg(t.selected_bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(t.main_fg)
+        };
+        if x + w <= rect.x + rect.width {
+            app.hits.add(Rect::new(x, row, w, 1), Hit::Pick(i));
+        }
+        x += w + 1;
+        spans.push(Span::styled(text, style));
+        spans.push(Span::raw(" "));
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(spans)),
+        Rect {
+            y: row,
+            height: 1,
+            ..rect
+        },
+    );
+    let back = app.keymap.hint(Action::Menu);
+    f.render_widget(
+        Paragraph::new(format!("← or → pick   enter set   {back} cancel"))
+            .alignment(Alignment::Center)
+            .style(Style::new().fg(t.inactive_fg)),
+        Rect {
+            y: row + 1,
+            height: 1,
+            ..rect
+        },
+    );
 }
 
 /// `●━━━━━━○──────` progress line with the theme gradient.
@@ -572,6 +648,20 @@ mod tests {
         });
         let menu = screen(&mut app);
         assert!(menu.contains("Even loudness") && menu.contains("Notifications"));
+        assert!(menu.contains("Media controls"));
+
+        // The sleep timer strip sits in box 2, with its choices and keys.
+        app.overlay = None;
+        app.dispatch(Action::SleepTimer);
+        let strip = screen(&mut app);
+        assert!(strip.contains("sleep timer") && strip.contains("end of song"));
+        assert!(strip.contains("← or → pick"));
+        // Badges for speed and the timer on the Now Playing line.
+        app.dispatch(Action::SleepTimer);
+        app.speed = 1.25;
+        app.sleep = Some(crate::picker::SleepTimer::EndOfSong);
+        let np = screen(&mut app);
+        assert!(np.contains("1.25×") && np.contains("☾ end of song"));
     }
 
     fn track(i: usize) -> Track {

@@ -20,11 +20,22 @@ including any keys you've remapped.
 | `t` | theme picker (live preview) | `[` `]` | change search filter / library section |
 | `esc` | back, or the menu | `c` | jump to the playing track |
 | `Q` | quit | `F5` | reload the current list |
+| `z` | sleep timer | `x` | playback speed |
 
 **In the search box:** type, and suggestions appear underneath. `↑` `↓` pick
 one, `→` accepts the dimmed completion, `tab` changes the filter (Songs,
 Videos, Albums, Artists, Playlists), `enter` searches. `ctrl+w` deletes the
 word before the cursor and `ctrl+u` everything before it.
+
+**Sleep timer and playback speed.** `z` and `x` open a small strip at the
+bottom of the player box (box 2) with the choices in a row. `←` or `→` picks,
+`enter` sets it, and `esc` (or the same key again) closes it without a
+change; a click on a choice sets it too. The sleep timer stops the music after
+15, 30, 45, 60 or 90 minutes, or at the end of the current song: the volume
+eases down over the last ten seconds, pova pauses, and the volume is back to
+normal for next time. Playback speed goes from 0.5× to 2× and keeps voices at
+their natural pitch. While either is in use, the Now Playing line shows it
+(`☾ 23m`, `1.5×`). Both last until you quit pova.
 
 **The Esc menu.** Like btop, pressing `esc` when there's nothing to go back
 from opens a menu with the pova logo drawn in block characters, in the logo's

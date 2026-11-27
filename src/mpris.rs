@@ -100,6 +100,8 @@ pub struct Snapshot {
     pub shuffle: bool,
     /// MPRIS LoopStatus: "None", "Playlist" or "Track".
     pub repeat: &'static str,
+    /// Playback speed; widgets use it to move the progress bar.
+    pub rate: f64,
 }
 
 pub async fn run(
@@ -281,6 +283,9 @@ async fn update(conn: &Connection, old: &Snapshot, new: &Snapshot, art: Option<&
     if old.repeat != new.repeat {
         p.loop_status_changed(e).await?;
     }
+    if old.rate != new.rate {
+        p.rate_changed(e).await?;
+    }
     Ok(())
 }
 
@@ -435,21 +440,28 @@ impl Player {
 
     #[zbus(property)]
     fn rate(&self) -> f64 {
-        1.0
+        if self.snap.rate > 0.0 { self.snap.rate } else { 1.0 }
     }
 
-    /// Fixed at 1 for now; requests for other rates are ignored.
+    /// Snaps to the nearest of pova's speeds (0.5× to 2×); 0 pauses.
     #[zbus(property)]
-    fn set_rate(&mut self, _value: f64) {}
+    fn set_rate(&mut self, value: f64) {
+        // The spec: a rate of 0 means pause.
+        if value == 0.0 {
+            self.send(Command::Pause);
+        } else if value.is_finite() && value > 0.0 {
+            self.send(Command::Speed(format!("{value}")));
+        }
+    }
 
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "const"))]
     fn minimum_rate(&self) -> f64 {
-        1.0
+        crate::picker::SPEEDS[0]
     }
 
-    #[zbus(property)]
+    #[zbus(property(emits_changed_signal = "const"))]
     fn maximum_rate(&self) -> f64 {
-        1.0
+        crate::picker::SPEEDS[crate::picker::SPEEDS.len() - 1]
     }
 
     #[zbus(property)]

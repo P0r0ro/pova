@@ -11,6 +11,7 @@ mod lyrics;
 mod model;
 mod mpris;
 mod notify;
+mod picker;
 mod player;
 mod resolve;
 mod theme;

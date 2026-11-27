@@ -69,6 +69,8 @@ actions! {
     ClearQueue => "clear_queue", "Clear queue (keeps current)";
     Refresh => "refresh", "Reload current view";
     JumpToCurrent => "jump_current", "Jump to playing track";
+    SleepTimer => "sleep_timer", "Sleep timer (pause after a while)";
+    PlaybackSpeed => "playback_speed", "Playback speed";
 }
 
 /// A normalised key: for printable characters SHIFT is folded into the char.
@@ -249,6 +251,8 @@ fn defaults() -> Vec<(Action, &'static [&'static str])> {
         (ClearQueue, &["C"]),
         (Refresh, &["F5", "ctrl+r"]),
         (JumpToCurrent, &["c"]),
+        (SleepTimer, &["z"]),
+        (PlaybackSpeed, &["x"]),
     ]
 }
 
