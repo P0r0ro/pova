@@ -1,6 +1,6 @@
 # Maintainer: P0r0ro <250746769+P0r0ro@users.noreply.github.com>
 pkgname=pova-bin
-pkgver=1.2.4
+pkgver=1.3.0
 pkgrel=1
 pkgdesc="YouTube Music in the terminal, with a cava visualizer and btop themes"
 arch=('x86_64')

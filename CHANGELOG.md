@@ -1,22 +1,7 @@
 # Changelog
 
-## Unreleased
+## 1.3.0 — media controls, sleep timer, playback speed, crossfade
 
-- **Arabic, Persian and Hebrew lyrics read the right way.** Terminals draw
-  text left to right, so right-to-left lyrics came out backwards with loose
-  letters. pova now joins the letters and lays each line out right to left,
-  wrapping long lines where a reader expects.
-- **Crossfade**, in the `esc` menu: `smooth` fades each song's end out and
-  the next one in (no extra cost), `overlap` plays the end of one song over
-  the start of the next, like a DJ. Overlap starts a second mpv for a few
-  seconds at each song change, about 60 to 100 MB more memory while it runs;
-  the menu says so. Off by default.
-- **Sleep timer** (`z`): pause after 15 to 90 minutes, or at the end of the
-  current song. The volume eases down over the last ten seconds first, and
-  is back to normal when you press play again. The time left shows on the
-  Now Playing line.
-- **Playback speed** (`x`): 0.5× to 2×, with voices kept at their natural
-  pitch. Desktop media widgets follow the speed too.
 - **Media controls.** pova now appears as a media player on your desktop:
   the media widget in KDE's panel, GNOME's top bar, Cinnamon, XFCE and
   others, plus media keys, the lock screen, KDE Connect, waybar and
@@ -28,6 +13,22 @@
   have it, pova keeps it out of its own mpv so you don't see pova twice. If
   your package manager installed it only for pova, `sudo apt autoremove` or
   `sudo dnf autoremove` will offer to remove it.
+- **Sleep timer** (`z`): pause after 15 to 90 minutes, or at the end of the
+  current song. The volume eases down over the last ten seconds first, and
+  is back to normal when you press play again. The time left shows on the
+  Now Playing line.
+- **Playback speed** (`x`): 0.5× to 2×, with voices kept at their natural
+  pitch. Desktop media widgets follow the speed too.
+- **Crossfade**, in the `esc` menu: `smooth` fades each song's end out and
+  the next one in (no extra cost), `overlap` plays the end of one song over
+  the start of the next, like a DJ. Overlap starts a second mpv for a few
+  seconds at each song change, about 60 to 100 MB more memory while it runs;
+  the menu says so. Off by default. The fades need mpv 0.38 or newer
+  (Ubuntu 24.04 still ships 0.37; there songs change without the fade).
+- **Arabic, Persian and Hebrew lyrics read the right way.** Terminals draw
+  text left to right, so right-to-left lyrics came out backwards with loose
+  letters. pova now joins the letters and lays each line out right to left,
+  wrapping long lines where a reader expects.
 - **Clearer key hints.** Pairs of keys now read "[ or ]", "< or > track"
   and "← or → seek" instead of "[/]", "</>" and ",/.", which looked like a
   single odd key. In a narrow controls box, the less important hints are
