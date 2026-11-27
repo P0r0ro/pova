@@ -51,6 +51,42 @@ impl Paths {
     }
 }
 
+/// How songs change over (the Esc menu's "Crossfade").
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Crossfade {
+    /// Straight from one song to the next (gapless).
+    #[default]
+    Off,
+    /// Fade the end of each song out and the next one in, inside pova's mpv.
+    Smooth,
+    /// Real overlap: the old song fades out while the next fades in. Runs a
+    /// second mpv for a few seconds at each song change (more memory).
+    Overlap,
+}
+
+impl Crossfade {
+    pub fn label(self) -> &'static str {
+        match self {
+            Crossfade::Off => "off",
+            Crossfade::Smooth => "smooth",
+            Crossfade::Overlap => "overlap (more memory)",
+        }
+    }
+
+    pub fn next(self) -> Crossfade {
+        match self {
+            Crossfade::Off => Crossfade::Smooth,
+            Crossfade::Smooth => Crossfade::Overlap,
+            Crossfade::Overlap => Crossfade::Off,
+        }
+    }
+
+    pub fn prev(self) -> Crossfade {
+        self.next().next()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum VizMode {
@@ -156,6 +192,8 @@ pub struct Config {
     pub notifications: bool,
     /// Media controls (MPRIS): desktop media widgets, media keys, playerctl.
     pub media_controls: bool,
+    /// Song changes: off, smooth (fade out / in) or overlap (true crossfade).
+    pub crossfade: Crossfade,
     /// Action name -> key(s), e.g. `next = ["N", "ctrl+right"]`.
     pub keys: HashMap<String, Vec<String>>,
     pub viz: VizConfig,
@@ -176,6 +214,7 @@ impl Default for Config {
             normalize_loudness: true,
             notifications: false,
             media_controls: true,
+            crossfade: Crossfade::Off,
             keys: HashMap::new(),
             viz: VizConfig::default(),
         }
@@ -255,6 +294,7 @@ pub struct State {
     pub normalize_loudness: Option<bool>,
     pub notifications: Option<bool>,
     pub media_controls: Option<bool>,
+    pub crossfade: Option<Crossfade>,
 }
 
 impl State {

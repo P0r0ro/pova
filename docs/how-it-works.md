@@ -31,6 +31,16 @@ about two songs, the one playing and the one coming next. Preloading the next
 one is what makes playback gapless. Shuffle can be undone, too: every queue
 entry remembers when it was added, so turning shuffle off restores your order.
 
+**Crossfade.** The smooth fade is just mpv's `volume-gain`, a gain stage
+separate from your volume, moved as the song nears its end. The overlap
+crossfade needs two songs playing at once, so for each song change pova
+starts a short-lived second mpv, paused at the overlap point, from the song's
+already-resolved stream. When the main mpv reaches that point the helper
+takes over the ending and fades it out, and the main mpv moves on to the next
+song and fades it in. The helper quits a few seconds later. The main mpv stays
+in charge of everything (queue, time, lyrics, visualizer); it only ever gets
+an ordinary "next".
+
 **The four-second problem.** Before mpv can play a YouTube Music song, yt-dlp
 has to work out the real audio address, which involves solving a JavaScript
 puzzle YouTube sets. That takes three to four seconds every time. pova's

@@ -704,6 +704,7 @@ mod tests {
                 notify: unbounded_channel().0,
                 mpris: unbounded_channel().0,
                 mpris_pos: Default::default(),
+                fader: unbounded_channel().0,
             },
             None,
             None,
