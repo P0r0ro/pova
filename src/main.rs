@@ -448,6 +448,11 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
         mpris_control,
     ));
 
+    // Overlap crossfade helper: idle until a song change needs it.
+    let (fader_tx, fader_rx) = unbounded_channel();
+    let (fader_ev_tx, mut fader_ev_rx) = unbounded_channel();
+    tokio::spawn(player::fader::run(paths.runtime_dir.clone(), fader_rx, fader_ev_tx));
+
     let channels = Channels {
         player: player_tx.clone(),
         ytm: ytm_tx,
@@ -457,6 +462,7 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
         notify: notify_tx,
         mpris: mpris_tx,
         mpris_pos,
+        fader: fader_tx,
     };
     let mut app = App::new(cfg, paths, state, keymap, channels, picker, art_proto);
     app.cat_art = cat_proto;
@@ -505,6 +511,7 @@ async fn run(cli: Cli, cfg: Config, paths: Paths, state: State) -> anyhow::Resul
                 Some(ev) = lyrics_rx.recv() => app.on_lyrics(ev),
                 Some(ev) = art_rx.recv() => app.on_art(ev),
                 Some(ev) = resolve_rx.recv() => app.on_resolved(ev),
+                Some(ev) = fader_ev_rx.recv() => app.on_fader(ev),
                 Some(req) = control_rx.recv() => {
                     let answer = app.on_control(req.command);
                     let _ = req.reply.send(answer);

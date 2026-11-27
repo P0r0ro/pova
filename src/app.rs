@@ -308,13 +308,14 @@ pub enum MenuItem {
     Loudness,
     Notifications,
     MediaControls,
+    Crossfade,
     Account,
     Help,
     Quit,
 }
 
 impl MenuItem {
-    pub const ALL: [MenuItem; 10] = [
+    pub const ALL: [MenuItem; 11] = [
         MenuItem::Themes,
         MenuItem::VizMode,
         MenuItem::Autoplay,
@@ -322,6 +323,7 @@ impl MenuItem {
         MenuItem::Loudness,
         MenuItem::Notifications,
         MenuItem::MediaControls,
+        MenuItem::Crossfade,
         MenuItem::Account,
         MenuItem::Help,
         MenuItem::Quit,
@@ -337,6 +339,7 @@ impl MenuItem {
                 | MenuItem::Loudness
                 | MenuItem::Notifications
                 | MenuItem::MediaControls
+                | MenuItem::Crossfade
         )
     }
 }
@@ -468,6 +471,8 @@ pub struct Channels {
     pub mpris: UnboundedSender<crate::mpris::Msg>,
     /// Playback position for media controls, read on request.
     pub mpris_pos: crate::mpris::Position,
+    /// The overlap crossfade's short-lived helper mpv.
+    pub fader: UnboundedSender<crate::player::fader::FaderCmd>,
 }
 
 pub struct App {
@@ -565,7 +570,45 @@ pub struct App {
     sleep_badge: String,
     /// Playback speed (1 = normal); for this session only.
     pub speed: f64,
+    picked_crossfade: Option<crate::config::Crossfade>,
+    /// Crossfade gain last sent to mpv's fade filter.
+    fade_gain: f64,
+    /// This song fades in over this many seconds (after an automatic song
+    /// change), with the equal-power curve when it's an overlap.
+    fade_in: Option<(f64, bool)>,
+    /// Overlap crossfade state for the song `.0`.
+    overlap: (String, Overlap),
+    /// Numbers each helper request, so late events from an old one are ignored.
+    overlap_gen: u64,
+    /// When pova told mpv to move on for an overlap (waiting for it to).
+    running_since: Option<Instant>,
+    /// The helper may still be playing the last song's ending until then.
+    helper_until: Option<Instant>,
+    /// "Crossfade needs a newer mpv" was shown.
+    fade_unsupported_told: bool,
 }
+
+/// Where the overlap crossfade is for the current song.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Overlap {
+    Idle,
+    /// The helper mpv is loading the song's ending.
+    Preparing,
+    /// Loaded and paused at the overlap point.
+    Ready,
+    /// Overlapping: the helper plays the ending, mpv moved to the next song.
+    Running,
+    /// Not this time (no direct URL, too slow, a seek): smooth fade instead.
+    Skip,
+}
+
+/// Smooth crossfade: fade out over the last / in over the first seconds.
+const SMOOTH_OUT: f64 = 4.0;
+const SMOOTH_IN: f64 = 2.0;
+/// Overlap crossfade: how long both songs play, and how much earlier the
+/// helper starts loading.
+const OVERLAP: f64 = 6.0;
+const OVERLAP_PREP: f64 = 5.0;
 
 impl App {
     pub fn new(
@@ -583,6 +626,7 @@ impl App {
         cfg.normalize_loudness = state.normalize_loudness.unwrap_or(cfg.normalize_loudness);
         cfg.notifications = state.notifications.unwrap_or(cfg.notifications);
         cfg.media_controls = state.media_controls.unwrap_or(cfg.media_controls);
+        cfg.crossfade = state.crossfade.unwrap_or(cfg.crossfade);
         let theme_name = state.theme.clone().unwrap_or_else(|| cfg.theme.clone());
         let theme = theme::load_named(&paths.config_dir, &theme_name, cfg.theme_background);
         let volume = state.volume.unwrap_or(cfg.volume).min(100) as f64;
@@ -658,6 +702,14 @@ impl App {
             sleep_fade: None,
             sleep_badge: String::new(),
             speed: 1.0,
+            picked_crossfade: state.crossfade,
+            fade_gain: 1.0,
+            fade_in: None,
+            overlap: (String::new(), Overlap::Idle),
+            overlap_gen: 0,
+            running_since: None,
+            helper_until: None,
+            fade_unsupported_told: false,
             cfg,
             paths,
         }
@@ -708,6 +760,7 @@ impl App {
             MenuItem::Loudness => format!("Even loudness  ‹ {} ›", on_off(self.cfg.normalize_loudness)),
             MenuItem::Notifications => format!("Notifications  ‹ {} ›", on_off(self.cfg.notifications)),
             MenuItem::MediaControls => format!("Media controls ‹ {} ›", on_off(self.cfg.media_controls)),
+            MenuItem::Crossfade => format!("Crossfade      ‹ {} ›", self.cfg.crossfade.label()),
             MenuItem::Account => if self.logged_in { "Sign out" } else { "Sign in" }.into(),
             MenuItem::Help => "Help".into(),
             MenuItem::Quit => "Quit".into(),
@@ -756,6 +809,15 @@ impl App {
                 self.mpris_last = None;
                 let _ = self.tx.mpris.send(crate::mpris::Msg::Enable(self.cfg.media_controls));
                 self.sync_mpris();
+                self.save_state();
+            }
+            MenuItem::Crossfade => {
+                let was = self.cfg.crossfade;
+                let now = if forward { was.next() } else { was.prev() };
+                self.set_crossfade(now);
+                if now == crate::config::Crossfade::Overlap {
+                    self.flash("Overlap: a second mpv at each song change (60-100 MB more)", false);
+                }
                 self.save_state();
             }
             MenuItem::VizMode => {
@@ -842,6 +904,7 @@ impl App {
             normalize_loudness: self.picked_loudness,
             notifications: self.picked_notifications,
             media_controls: self.picked_media_controls,
+            crossfade: self.picked_crossfade,
         }
         .save(&self.paths.state_file());
     }
@@ -886,6 +949,11 @@ impl App {
             }
         }
         self.tick_sleep();
+        // mpv never moved on after the overlap's "next": play at full gain.
+        if self.running_since.is_some_and(|t| t.elapsed() > Duration::from_secs(3)) {
+            tracing::info!("crossfade: mpv didn't switch songs; back to full volume");
+            self.cancel_overlap();
+        }
         if let Some(f) = &self.flash
             && Instant::now() > f.until
         {
@@ -1430,6 +1498,8 @@ impl App {
     /// The user set the volume during the sleep fade: they're still
     /// listening, so the timer is off and their volume stays.
     fn volume_by_user(&mut self) {
+        // The overlap helper plays at the volume it started with: stop it.
+        self.cancel_overlap();
         if self.sleep_fade.take().is_some() {
             self.sleep = None;
             self.sleep_badge.clear();
@@ -1498,6 +1568,193 @@ impl App {
         }
     }
 
+    /// mpv moved to `vid` by itself (the preloaded next song, gapless, or
+    /// the overlap's "next"): follow it in the queue. False when it's the
+    /// song pova just loaded, or one not in the queue.
+    fn advance_to_preloaded(&mut self, vid: &str) -> bool {
+        if self.current().map(|t| t.video_id.as_str()) == Some(vid) {
+            return false;
+        }
+        let idx = self
+            .queue
+            .next_index()
+            .filter(|&n| self.queue.get(n).is_some_and(|t| t.video_id == vid))
+            .or_else(|| self.queue.position_of(vid));
+        let Some(i) = idx else { return false };
+        self.queue.current = Some(i);
+        self.player.time = 0.0;
+        // An automatic song change: fade the new song in.
+        let overlapped = self.overlap.1 == Overlap::Running;
+        self.fade_in = match self.cfg.crossfade {
+            crate::config::Crossfade::Off => None,
+            _ if overlapped => Some((OVERLAP, true)),
+            _ => Some((SMOOTH_IN, false)),
+        };
+        if overlapped {
+            // The helper plays the old ending for a few more seconds.
+            self.running_since = None;
+            self.helper_until = Some(Instant::now() + Duration::from_secs_f64(OVERLAP / self.speed + 1.0));
+        } else {
+            self.cancel_overlap();
+        }
+        self.overlap = (String::new(), Overlap::Idle);
+        self.on_track_changed();
+        // The song ended before the timer saw its last moment.
+        if self.sleep == Some(crate::picker::SleepTimer::EndOfSong) {
+            self.sleep_done();
+        }
+        true
+    }
+
+    // ───────────────────────────── crossfade ─────────────────────────────
+
+    fn set_crossfade(&mut self, mode: crate::config::Crossfade) {
+        use crate::config::Crossfade;
+        let was = self.cfg.crossfade;
+        self.cfg.crossfade = mode;
+        self.picked_crossfade = Some(mode);
+        if mode == Crossfade::Off || was == Crossfade::Overlap {
+            self.cancel_overlap();
+        }
+        // Off: back to full gain.
+        if mode == Crossfade::Off {
+            self.fade_in = None;
+            if self.fade_gain != 1.0 {
+                self.fade_gain = 1.0;
+                self.player(PlayerCmd::FadeGain(1.0));
+            }
+        }
+    }
+
+    /// Kill the overlap helper (if any) and fall back to the smooth fade for
+    /// the rest of this song.
+    fn cancel_overlap(&mut self) {
+        let tail = self.helper_until.take().is_some_and(|t| Instant::now() < t);
+        let phase = self.overlap.1;
+        if tail || matches!(phase, Overlap::Preparing | Overlap::Ready | Overlap::Running) {
+            let _ = self.tx.fader.send(crate::player::fader::FaderCmd::Cancel);
+        }
+        match phase {
+            Overlap::Preparing | Overlap::Ready => self.overlap.1 = Overlap::Skip,
+            Overlap::Running => {
+                // mpv was told to move on with the gain at 0: undo that.
+                self.running_since = None;
+                self.overlap = (String::new(), Overlap::Idle);
+                self.reset_fade_gain();
+            }
+            Overlap::Idle | Overlap::Skip => {}
+        }
+    }
+
+    fn reset_fade_gain(&mut self) {
+        if self.fade_gain != 1.0 {
+            self.fade_gain = 1.0;
+            self.player(PlayerCmd::FadeGain(1.0));
+        }
+    }
+
+    pub fn on_fader(&mut self, ev: crate::player::fader::FaderEvent) {
+        use crate::player::fader::FaderEvent;
+        // Only the newest request counts; a cancelled one was already told.
+        let state = &mut self.overlap.1;
+        match ev {
+            FaderEvent::Ready(g) if g == self.overlap_gen && *state == Overlap::Preparing => *state = Overlap::Ready,
+            FaderEvent::Failed(g) if g == self.overlap_gen && *state == Overlap::Preparing => *state = Overlap::Skip,
+            _ => {}
+        }
+    }
+
+    /// Crossfade on each position update: start and trigger the overlap
+    /// helper, and set the smooth fade gain. Sends nothing when the gain
+    /// hasn't moved.
+    fn crossfade_tick(&mut self, t: f64) {
+        use crate::config::Crossfade;
+        use crate::player::fader::{FaderCmd, Prepare, audio_args};
+        let mode = self.cfg.crossfade;
+        if mode == Crossfade::Off {
+            return;
+        }
+        let Some(vid) = self.current().map(|t| t.video_id.clone()) else {
+            return;
+        };
+        if self.overlap.0 != vid {
+            if self.overlap.1 == Overlap::Running {
+                // mpv hasn't switched yet; the helper is playing the ending.
+                return;
+            }
+            self.overlap = (vid.clone(), Overlap::Idle);
+        }
+        let d = self.player.duration;
+        let repeat_one = self.queue.repeat == Repeat::One;
+        let playing = !self.player.paused && !self.player.idle;
+        if mode == Crossfade::Overlap && !repeat_one && d > OVERLAP * 3.0 {
+            let start = d - OVERLAP;
+            match self.overlap.1 {
+                Overlap::Idle if d - t <= OVERLAP + OVERLAP_PREP && t < start - 1.5 => {
+                    let url = self
+                        .streams
+                        .get(&vid)
+                        .filter(|(_, until)| *until > SystemTime::now() && !self.direct_failed.contains(&vid))
+                        .map(|(u, _)| u.clone());
+                    match url {
+                        Some(url) if playing && !self.player.muted && self.next_sent.is_some() => {
+                            self.overlap_gen += 1;
+                            let _ = self.tx.fader.send(FaderCmd::Prepare(Prepare {
+                                id: self.overlap_gen,
+                                url,
+                                start,
+                                volume: self.player.volume,
+                                speed: self.speed,
+                                filter: self.cfg.normalize_loudness.then(crate::player::mpv::normalize_filter),
+                                audio_args: audio_args(&self.cfg.mpv_args),
+                                // Done a moment before the song's end.
+                                fade: (OVERLAP - 0.5) / self.speed,
+                            }));
+                            self.overlap.1 = Overlap::Preparing;
+                        }
+                        _ => self.overlap.1 = Overlap::Skip,
+                    }
+                }
+                Overlap::Preparing if t >= start => self.cancel_overlap(),
+                Overlap::Ready if t >= start - 0.03 && self.next_sent.is_some() => {
+                    let _ = self.tx.fader.send(FaderCmd::Go);
+                    self.fade_gain = 0.0;
+                    self.player(PlayerCmd::FadeGain(0.0));
+                    self.player(PlayerCmd::PlaylistNext);
+                    self.overlap.1 = Overlap::Running;
+                    self.running_since = Some(Instant::now());
+                    return;
+                }
+                // The next song went away meanwhile (queue edited): smooth fade.
+                Overlap::Ready if t >= start => self.cancel_overlap(),
+                Overlap::Running => return,
+                _ => {}
+            }
+        }
+        let overlapping = self.overlap.1 == Overlap::Running;
+        let out = if repeat_one || overlapping || d <= 0.0 {
+            1.0
+        } else {
+            ((d - t) / SMOOTH_OUT).clamp(0.0, 1.0)
+        };
+        let inn = match self.fade_in {
+            Some((len, equal_power)) => {
+                let x = (t / len).clamp(0.0, 1.0);
+                if x >= 1.0 {
+                    self.fade_in = None;
+                }
+                if equal_power { x.sqrt() } else { x }
+            }
+            None => 1.0,
+        };
+        let g = out.min(inn);
+        let moved = (g - self.fade_gain).abs() >= 0.02 || (g != self.fade_gain && (g == 1.0 || g == 0.0));
+        if moved {
+            self.fade_gain = g;
+            self.player(PlayerCmd::FadeGain(g));
+        }
+    }
+
     // ───────────────────────────── events ─────────────────────────────
 
     pub fn on_player(&mut self, ev: PlayerEvent) {
@@ -1518,6 +1775,7 @@ impl App {
                 if self.player.duration > 0.0 && self.player.duration - t <= AUTOPLAY_LEAD {
                     self.maybe_autoplay();
                 }
+                self.crossfade_tick(t);
                 if t > 0.0 {
                     self.consecutive_errors = 0;
                     if let Some((t0, direct)) = self.start_timer.take() {
@@ -1539,46 +1797,66 @@ impl App {
                 return;
             }
             PlayerEvent::Duration(d) => self.player.duration = d,
-            PlayerEvent::Paused(p) => self.player.paused = p,
+            PlayerEvent::Paused(p) => {
+                self.player.paused = p;
+                if p {
+                    self.cancel_overlap();
+                }
+            }
             PlayerEvent::Volume(v) => self.player.volume = v,
-            PlayerEvent::Muted(m) => self.player.muted = m,
+            PlayerEvent::Muted(m) => {
+                self.player.muted = m;
+                if m {
+                    // The helper doesn't follow mute: stop it.
+                    self.cancel_overlap();
+                }
+            }
             PlayerEvent::Buffering(b) => self.player.buffering = b,
             // mpv restarts playback after every seek and at every new file;
             // only seeks are MPRIS "Seeked".
             PlayerEvent::Restarted => {
+                if !self.new_file {
+                    // A seek: no overlap for this song any more.
+                    self.cancel_overlap();
+                }
                 self.seek_pending = !std::mem::take(&mut self.new_file) && self.cfg.media_controls;
             }
             PlayerEvent::Path(Some(path)) => {
                 self.load_started = None;
                 self.new_file = true;
-                let Some(vid) = video_id_from_url(&path).or_else(|| self.url_vid.get(&path).cloned()) else {
+                let vid = video_id_from_url(&path).or_else(|| self.url_vid.get(&path).cloned());
+                let gapless = vid.as_ref().is_some_and(|vid| self.advance_to_preloaded(vid));
+                if !gapless {
+                    // A song change pova didn't make for a crossfade (a skip,
+                    // a new queue): stop any helper and play at full gain.
+                    self.cancel_overlap();
+                    self.overlap = (String::new(), Overlap::Idle);
+                    self.fade_in = None;
+                    self.reset_fade_gain();
+                }
+                if vid.is_none() {
                     return;
-                };
-                if self.current().map(|t| t.video_id.as_str()) != Some(vid.as_str()) {
-                    // mpv advanced to the preloaded next track (gapless).
-                    let idx = self
-                        .queue
-                        .next_index()
-                        .filter(|&n| self.queue.get(n).is_some_and(|t| t.video_id == vid))
-                        .or_else(|| self.queue.position_of(&vid));
-                    if let Some(i) = idx {
-                        self.queue.current = Some(i);
-                        self.player.time = 0.0;
-                        self.on_track_changed();
-                        // The song ended before the timer saw its last moment.
-                        if self.sleep == Some(crate::picker::SleepTimer::EndOfSong) {
-                            self.sleep_done();
-                        }
-                    }
                 }
                 // Whatever was preloaded is now playing (or stale).
                 self.next_sent = None;
                 self.sync_next();
             }
+            PlayerEvent::FadeUnsupported => {
+                if !std::mem::replace(&mut self.fade_unsupported_told, true) {
+                    self.flash(
+                        "Crossfade needs mpv 0.38 or newer. This mpv is older, so songs change \
+                         without fading; updating mpv brings the fade.",
+                        true,
+                    );
+                }
+            }
             PlayerEvent::Path(None) => {}
             PlayerEvent::Idle(idle) => {
                 let was_playing = !self.player.idle;
                 self.player.idle = idle;
+                if idle {
+                    self.cancel_overlap();
+                }
                 if idle && was_playing && self.load_started.is_none() {
                     // Fell off the end of mpv's playlist (end of queue, or the
                     // preloaded track failed). Continue from the queue unless
@@ -3621,6 +3899,7 @@ mod search_tests {
                 notify: unbounded_channel().0,
                 mpris: unbounded_channel().0,
                 mpris_pos: Default::default(),
+                fader: unbounded_channel().0,
             },
             None,
             None,
@@ -3929,6 +4208,7 @@ mod resolve_tests {
             notify: unbounded_channel().0,
             mpris: unbounded_channel().0,
             mpris_pos: Default::default(),
+            fader: unbounded_channel().0,
         };
         let app = App::new(Config::default(), paths, State::default(), keymap, channels, None, None);
         Harness {
@@ -4026,6 +4306,128 @@ mod resolve_tests {
         assert!(matches!(cmds[..], [PlayerCmd::TogglePause, PlayerCmd::SetVolume(v)] if v == 80.0));
         assert!(h.app.sleep.is_none() && h.app.player.paused);
         assert_eq!(h.app.player.volume, 80.0);
+    }
+
+    fn gains(cmds: &[PlayerCmd]) -> Vec<f64> {
+        cmds.iter()
+            .filter_map(|c| if let PlayerCmd::FadeGain(g) = c { Some(*g) } else { None })
+            .collect()
+    }
+
+    #[test]
+    fn smooth_crossfade_fades_the_end_and_never_touches_the_volume() {
+        let mut h = harness();
+        h.app.queue.replace(vec![track("a"), track("b")], 0);
+        h.app.player.idle = false;
+        h.app.player.duration = 200.0;
+        h.app.set_crossfade(crate::config::Crossfade::Smooth);
+        // Mid-song: nothing sent.
+        h.app.on_player(PlayerEvent::TimePos(100.0));
+        assert!(gains(&drain(&mut h.player)).is_empty());
+        // Last 4 s: down to 0.
+        h.app.on_player(PlayerEvent::TimePos(198.0));
+        h.app.on_player(PlayerEvent::TimePos(200.0));
+        let cmds = drain(&mut h.player);
+        assert_eq!(gains(&cmds), [0.5, 0.0]);
+        assert!(!cmds.iter().any(|c| matches!(c, PlayerCmd::SetVolume(_))));
+        // mpv moves on by itself: the next song fades in over 2 s.
+        h.app.on_player(PlayerEvent::Path(Some(track("b").url())));
+        h.app.on_player(PlayerEvent::TimePos(1.0));
+        h.app.on_player(PlayerEvent::TimePos(2.0));
+        assert_eq!(gains(&drain(&mut h.player)), [0.5, 1.0]);
+        // Off mid-fade: straight back to full gain.
+        h.app.on_player(PlayerEvent::TimePos(199.0));
+        drain(&mut h.player);
+        h.app.set_crossfade(crate::config::Crossfade::Off);
+        assert_eq!(gains(&drain(&mut h.player)), [1.0]);
+    }
+
+    #[test]
+    fn overlap_crossfade_needs_a_direct_url_and_hands_over_on_time() {
+        use crate::player::fader::{FaderCmd, FaderEvent};
+        let (f, mut frx) = unbounded_channel();
+        let mut h = harness();
+        h.app.tx.fader = f;
+        h.app.queue.replace(vec![track("a"), track("b")], 0);
+        h.app.player.idle = false;
+        h.app.player.duration = 200.0;
+        h.app.next_sent = Some(track("b").url());
+        h.app.set_crossfade(crate::config::Crossfade::Overlap);
+        // No direct URL for "a": smooth fade instead, no helper.
+        h.app.on_player(PlayerEvent::TimePos(190.0));
+        assert!(frx.try_recv().is_err());
+        assert_eq!(h.app.overlap.1, Overlap::Skip);
+
+        // With one: the helper loads the ending, then takes over at 194 s.
+        h.app.overlap = (String::new(), Overlap::Idle);
+        h.app.streams.insert(
+            "a".into(),
+            ("https://direct/a".into(), SystemTime::now() + Duration::from_secs(3600)),
+        );
+        h.app.on_player(PlayerEvent::TimePos(189.5));
+        assert!(matches!(frx.try_recv(), Ok(FaderCmd::Prepare(p)) if p.start == 194.0 && p.url == "https://direct/a"));
+        // A late event from an older helper is ignored.
+        h.app.on_fader(FaderEvent::Ready(h.app.overlap_gen - 1));
+        assert_eq!(h.app.overlap.1, Overlap::Preparing);
+        h.app.on_fader(FaderEvent::Ready(h.app.overlap_gen));
+        drain(&mut h.player);
+        h.app.on_player(PlayerEvent::TimePos(194.0));
+        assert!(matches!(frx.try_recv(), Ok(FaderCmd::Go)));
+        let cmds = drain(&mut h.player);
+        assert!(matches!(cmds[..], [PlayerCmd::FadeGain(g), PlayerCmd::PlaylistNext] if g == 0.0));
+        // mpv is on "b", which fades in (equal power) while the helper fades "a" out.
+        h.app.on_player(PlayerEvent::Path(Some(track("b").url())));
+        assert_eq!(h.app.current().map(|t| t.video_id.as_str()), Some("b"));
+        h.app.on_player(PlayerEvent::TimePos(1.5));
+        assert_eq!(gains(&drain(&mut h.player)), [0.5]);
+        // Pausing while the helper still plays a's ending stops it.
+        h.app.on_player(PlayerEvent::Paused(true));
+        assert!(matches!(frx.try_recv(), Ok(FaderCmd::Cancel)));
+        assert!(frx.try_recv().is_err());
+    }
+
+    #[test]
+    fn overlap_never_leaves_mpv_silent_or_a_song_unfaded() {
+        use crate::player::fader::{FaderCmd, FaderEvent};
+        let (f, mut frx) = unbounded_channel();
+        let mut h = harness();
+        h.app.tx.fader = f;
+        h.app.queue.replace(vec![track("a"), track("b"), track("c")], 0);
+        h.app.player.idle = false;
+        h.app.player.duration = 200.0;
+        h.app.next_sent = Some(track("b").url());
+        h.app.set_crossfade(crate::config::Crossfade::Overlap);
+        h.app.streams.insert(
+            "a".into(),
+            ("https://direct/a".into(), SystemTime::now() + Duration::from_secs(3600)),
+        );
+        h.app.on_player(PlayerEvent::TimePos(189.5));
+        h.app.on_fader(FaderEvent::Ready(h.app.overlap_gen));
+        // The queue changed: no next song any more. At the overlap point the
+        // helper is let go and the song fades out the smooth way.
+        h.app.next_sent = None;
+        h.app.on_player(PlayerEvent::TimePos(194.0));
+        while let Ok(c) = frx.try_recv() {
+            assert!(matches!(c, FaderCmd::Prepare(_) | FaderCmd::Cancel));
+        }
+        assert_eq!(h.app.overlap.1, Overlap::Skip);
+        drain(&mut h.player);
+        h.app.on_player(PlayerEvent::TimePos(198.0));
+        assert_eq!(gains(&drain(&mut h.player)), [0.5]);
+
+        // Handover sent, but the user skips to "c" before mpv reports "b":
+        // full gain again, helper stopped.
+        h.app.overlap = ("a".into(), Overlap::Ready);
+        h.app.next_sent = Some(track("b").url());
+        h.app.on_player(PlayerEvent::TimePos(194.0));
+        assert_eq!(h.app.overlap.1, Overlap::Running);
+        drain(&mut h.player);
+        while frx.try_recv().is_ok() {}
+        h.app.queue.current = Some(2);
+        h.app.on_player(PlayerEvent::Path(Some(track("c").url())));
+        assert!(matches!(frx.try_recv(), Ok(FaderCmd::Cancel)));
+        assert_eq!(gains(&drain(&mut h.player)), [1.0]);
+        assert_eq!(h.app.overlap.1, Overlap::Idle);
     }
 
     #[test]
@@ -4236,6 +4638,7 @@ mod resolve_tests {
             notify: n,
             mpris: unbounded_channel().0,
             mpris_pos: Default::default(),
+            fader: unbounded_channel().0,
         };
         let cfg = Config {
             notifications: true,
@@ -4557,6 +4960,7 @@ mod playlist_tests {
             notify: unbounded_channel().0,
             mpris: unbounded_channel().0,
             mpris_pos: Default::default(),
+            fader: unbounded_channel().0,
         };
         let cfg = Config {
             resume: false,

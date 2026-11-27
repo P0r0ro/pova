@@ -15,6 +15,7 @@ resume = true              # start where you left off: same queue, same spot, pa
 normalize_loudness = true  # play every song at the same loudness
 notifications = false      # desktop popup with the cover art when the song changes
 media_controls = true      # desktop media widget, media keys, lock screen, playerctl
+crossfade = "off"          # off | smooth | overlap: how one song turns into the next
 
 [viz]
 mode = "bars"              # bars | mirror | mono | wave
@@ -34,7 +35,7 @@ next = ["N", "ctrl+right"]
 pova remembers your last theme, volume, visualizer mode, box layout and menu
 settings in `~/.local/state/pova/state.toml`.
 
-**Even loudness, notifications and media controls** can also be switched in pova's `esc`
+**Even loudness, notifications, media controls and crossfade** can also be switched in pova's `esc`
 menu. What you pick there wins over `config.toml`.
 
 - `normalize_loudness` runs mpv's loudness filter (EBU R128, aiming at the
@@ -49,6 +50,18 @@ menu. What you pick there wins over `config.toml`.
   `playerctl`. It works on every Linux desktop (it's the MPRIS standard), runs
   inside pova (no extra program) and only shows information while it's on.
   See [remote-control.md](remote-control.md#media-keys-and-desktop-widgets).
+- `crossfade` changes how songs follow each other when one ends by itself
+  (skipping with `>` is always immediate):
+  - `off`: straight on, gapless, like before.
+  - `smooth`: the end of each song fades out over its last four seconds and
+    the next fades in. Free: it's a gain setting inside pova's mpv (needs mpv
+    0.38 or newer; older mpv simply plays without the fade).
+  - `overlap`: a real crossfade. For the last six seconds the old song fades
+    out while the next one is already fading in. To play both at once, pova
+    starts a second mpv for those few seconds, which uses about 60 to 100 MB
+    more memory while it runs, then quits. When a song's stream address isn't
+    ready in time, or you seek or pause near the end, that change uses
+    `smooth` instead.
 
 **Themes** are looked up in `~/.config/pova/themes/`, `~/.config/btop/themes/`
 and `/usr/share/btop/themes/`. Run `pova --list-themes` to see what you have.

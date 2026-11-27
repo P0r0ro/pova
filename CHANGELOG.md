@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Crossfade**, in the `esc` menu: `smooth` fades each song's end out and
+  the next one in (no extra cost), `overlap` plays the end of one song over
+  the start of the next, like a DJ. Overlap starts a second mpv for a few
+  seconds at each song change, about 60 to 100 MB more memory while it runs;
+  the menu says so. Off by default.
 - **Sleep timer** (`z`): pause after 15 to 90 minutes, or at the end of the
   current song. The volume eases down over the last ten seconds first, and
   is back to normal when you press play again. The time left shows on the

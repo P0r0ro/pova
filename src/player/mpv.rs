@@ -39,6 +39,11 @@ pub enum PlayerCmd {
     SetLoopFile(bool),
     /// Playback speed (mpv keeps the pitch).
     SetSpeed(f64),
+    /// Crossfade gain, 0 to 1, through mpv's `volume-gain` (mpv 0.38+): a
+    /// separate stage, so the user's volume is untouched, and no filter.
+    FadeGain(f64),
+    /// Skip to the preloaded next song (overlap crossfade).
+    PlaylistNext,
     /// Even out loudness between songs (adds / removes [`NORMALIZE_FILTER`]).
     SetNormalize(bool),
     Stop,
@@ -60,6 +65,8 @@ pub enum PlayerEvent {
     Buffering(bool),
     /// Playback (re)started after a seek or at a new file.
     Restarted,
+    /// This mpv has no `volume-gain` (older than 0.38): no smooth fades.
+    FadeUnsupported,
     /// A file finished; `reason` is mpv's end-file reason (eof, error, ...).
     EndFile {
         reason: String,
@@ -86,12 +93,16 @@ pub struct MpvConfig {
 /// again without touching filters from the user's `mpv_args`.
 const NORMALIZE_LABEL: &str = "@povanorm";
 
+/// Request id of crossfade gain changes: older mpv (before 0.38) has no
+/// `volume-gain`, and those failures shouldn't fill the log.
+const FADE_REQUEST: u64 = 0xFADE_0000_0000;
+
 /// EBU R128 loudness normalization to -14 LUFS (YouTube's own reference
 /// level), with a true-peak ceiling so loud masters don't clip. loudnorm
 /// outputs 192 kHz in this mode, so resample back to a normal rate.
 pub const NORMALIZE_FILTER: &str = "lavfi=[loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000]";
 
-fn normalize_filter() -> String {
+pub(crate) fn normalize_filter() -> String {
     format!("{NORMALIZE_LABEL}:{NORMALIZE_FILTER}")
 }
 
@@ -384,6 +395,14 @@ async fn run_inner(
                         }
                     }
                     PlayerCmd::SetSpeed(s) => send(&mut write, json!(["set_property", "speed", s])).await?,
+                    PlayerCmd::FadeGain(g) => {
+                        let db = if g <= 0.001 { -96.0 } else { (20.0 * g.min(1.0).log10()).max(-96.0) };
+                        let line = json!({ "command": ["set_property", "volume-gain", db], "request_id": FADE_REQUEST });
+                        let mut line = serde_json::to_vec(&line)?;
+                        line.push(b'\n');
+                        write.write_all(&line).await?;
+                    }
+                    PlayerCmd::PlaylistNext => send(&mut write, json!(["playlist-next", "weak"])).await?,
                     PlayerCmd::Stop => send(&mut write, json!(["stop"])).await?,
                     PlayerCmd::Quit => {
                         let _ = send(&mut write, json!(["quit"])).await;
@@ -415,7 +434,12 @@ fn handle_line(line: &str, events: &UnboundedSender<PlayerEvent>) {
     if let Some(err) = v.get("error").and_then(Value::as_str)
         && err != "success"
     {
-        tracing::warn!("mpv command failed: {line}");
+        if v.get("request_id").and_then(Value::as_u64) == Some(FADE_REQUEST) {
+            tracing::debug!("crossfade gain needs mpv 0.38 or newer: {line}");
+            let _ = events.send(PlayerEvent::FadeUnsupported);
+        } else {
+            tracing::warn!("mpv command failed: {line}");
+        }
     }
     let Some(event) = v.get("event").and_then(Value::as_str) else {
         return;

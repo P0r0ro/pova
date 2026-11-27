@@ -41,7 +41,8 @@ their natural pitch. While either is in use, the Now Playing line shows it
 from opens a menu with the pova logo drawn in block characters, in the logo's
 own violet-to-pink gradient. From it you pick a theme, change the visualizer
 mode, and turn autoplay, album art, even loudness, song-change
-notifications and media controls on and off. Your choices are saved.
+notifications and media controls on and off, and pick the crossfade. Your
+choices are saved.
 
 The mouse works too: click tabs, buttons, list rows and the progress bar, and
 scroll through lists. Click or scroll the volume bar to set the volume, click
