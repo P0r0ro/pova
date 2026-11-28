@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.3.1 — Arabic lyrics fix
 
 - **Fixed: Arabic lyrics scrambled in kitty, Konsole and GNOME Terminal.**
   These terminals lay out right-to-left text themselves, and 1.3.0 reordered
