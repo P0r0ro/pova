@@ -134,6 +134,19 @@ pub enum VizSource {
     System,
 }
 
+/// Who lays out right-to-left text (Arabic, Persian, Hebrew lyrics).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RtlText {
+    /// The terminal if it's known to do it (kitty, Konsole, VTE), else pova.
+    #[default]
+    Auto,
+    /// Leave the text as it is; the terminal orders it.
+    Terminal,
+    /// pova joins the letters and orders the text right to left.
+    Pova,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VizConfig {
@@ -194,6 +207,8 @@ pub struct Config {
     pub media_controls: bool,
     /// Song changes: off, smooth (fade out / in) or overlap (true crossfade).
     pub crossfade: Crossfade,
+    /// Right-to-left lyrics: laid out by the terminal or by pova.
+    pub rtl_text: RtlText,
     /// Action name -> key(s), e.g. `next = ["N", "ctrl+right"]`.
     pub keys: HashMap<String, Vec<String>>,
     pub viz: VizConfig,
@@ -215,6 +230,7 @@ impl Default for Config {
             notifications: false,
             media_controls: true,
             crossfade: Crossfade::Off,
+            rtl_text: RtlText::Auto,
             keys: HashMap::new(),
             viz: VizConfig::default(),
         }

@@ -229,6 +229,7 @@ fn main() -> anyhow::Result<()> {
     if cli.no_art {
         cfg.album_art = false;
     }
+    ui::set_rtl_text(cfg.rtl_text);
     let mut state = State::load(&paths.state_file());
     if let Some(t) = &cli.theme {
         state.theme = Some(t.clone());

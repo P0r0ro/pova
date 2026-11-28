@@ -16,6 +16,7 @@ normalize_loudness = true  # play every song at the same loudness
 notifications = false      # desktop popup with the cover art when the song changes
 media_controls = true      # desktop media widget, media keys, lock screen, playerctl
 crossfade = "off"          # off | smooth | overlap: how one song turns into the next
+rtl_text = "auto"          # auto | terminal | pova: who lays out Arabic and Hebrew lyrics
 
 [viz]
 mode = "bars"              # bars | mirror | mono | wave
@@ -62,6 +63,14 @@ menu. What you pick there wins over `config.toml`.
     more memory while it runs, then quits. When a song's stream address isn't
     ready in time, or you seek or pause near the end, that change uses
     `smooth` instead.
+
+**Right-to-left lyrics** (Arabic, Persian, Hebrew): some terminals lay these
+out right to left by themselves (kitty, Konsole, GNOME Terminal and the
+other VTE terminals); others draw every line left to right, so the words come
+out backwards (Alacritty, foot, xterm). With `rtl_text = "auto"` pova leaves
+the text to the terminals that handle it and lays it out itself in the rest.
+If Arabic lyrics look backwards or the letters come out scrambled in your
+terminal, set `"terminal"` or `"pova"` to pick by hand.
 
 **Themes** are looked up in `~/.config/pova/themes/`, `~/.config/btop/themes/`
 and `/usr/share/btop/themes/`. Run `pova --list-themes` to see what you have.
