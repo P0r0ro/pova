@@ -2,6 +2,7 @@
 
 mod banner;
 mod bidi;
+pub use bidi::set_mode as set_rtl_text;
 mod kitty_fix;
 mod overlay;
 mod tabs;

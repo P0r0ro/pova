@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Fixed: Arabic lyrics scrambled in kitty, Konsole and GNOME Terminal.**
+  These terminals lay out right-to-left text themselves, and 1.3.0 reordered
+  it a second time, so every word came out backwards. pova now leaves the
+  text alone there and only lays it out itself in terminals that don't
+  (Alacritty, foot, xterm). A new `rtl_text` setting overrides the choice.
+
 ## 1.3.0 — media controls, sleep timer, playback speed, crossfade
 
 - **Media controls.** pova now appears as a media player on your desktop:
